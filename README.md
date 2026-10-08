@@ -92,34 +92,90 @@ The interface is dark and neon-styled, with glass panels, cyan, magenta and viol
 
 ## Requirements
 
-On Debian, Ubuntu and their derivatives:
+You need:
 
-```sh
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 pulseaudio-utils
-```
+- **Python 3** with **PyGObject** (GTK 3 bindings) and **pycairo**
+- **GTK 3**
+- **`pactl` and `parec`**, the PulseAudio client tools
+- **PipeWire with its PulseAudio server** (`pipewire-pulse`), or plain PulseAudio
 
-On PipeWire systems, `pipewire-pulse` must be installed. Most current distributions include it by default.
-
-The tray icon needs a panel that supports the XEmbed system tray, such as XFCE, MATE, Cinnamon or LXDE/LXQt. On GNOME, the icon doesn't appear without an extension, so closing the window quits smanager.
-
-Firefox publishes media controls over MPRIS by default on Linux. Chrome and Chromium do too.
+smanager has no pip dependencies, and it bundles its fonts.
 
 ## Installation
+
+### 1. Install the dependencies
+
+<details open>
+<summary><b>Debian / Ubuntu / Linux Mint / Pop!_OS</b></summary>
+
+```sh
+sudo apt install git python3-gi python3-gi-cairo gir1.2-gtk-3.0 pulseaudio-utils
+```
+
+Current releases use PipeWire by default. If `pactl info` reports no server, install `pipewire-pulse` as well.
+
+</details>
+
+<details open>
+<summary><b>Fedora</b></summary>
+
+```sh
+sudo dnf install git python3-gobject python3-cairo gtk3 pulseaudio-utils
+```
+
+Fedora ships PipeWire with `pipewire-pulseaudio` by default. On Fedora, `pulseaudio-utils` contains only the client tools (`pactl`, `parec`), not the PulseAudio server.
+
+</details>
+
+<details open>
+<summary><b>Arch Linux / Manjaro / EndeavourOS</b></summary>
+
+```sh
+sudo pacman -S --needed git python-gobject python-cairo gtk3 libpulse pipewire-pulse
+```
+
+On Arch, `pactl` and `parec` come from the `libpulse` package. `pipewire-pulse` replaces the `pulseaudio` package. If you still use PulseAudio itself, leave `pipewire-pulse` out.
+
+</details>
+
+To check that the sound server is reachable, run `pactl info`. Its `Server Name` line should mention PipeWire or PulseAudio.
+
+### 2. Install smanager
 
 ```sh
 git clone https://github.com/msozturktr/smanager.git
 cd smanager
 ./install.sh               # install and add to the application menu
-./install.sh --autostart   # also start hidden in the tray at login
+./install.sh --autostart   # same, and also start hidden in the tray at login
 ```
 
-The script copies smanager to `~/.local/bin/smanager` and installs the bundled fonts into `~/.local/share/fonts/smanager`. It also adds a menu entry under `~/.local/share/applications`. It doesn't need `sudo`.
+The script works the same way on every distribution and doesn't need `sudo`. It does the following:
 
-To uninstall:
+- copies smanager to `~/.local/bin/smanager`
+- installs the bundled fonts into `~/.local/share/fonts/smanager`
+- adds a menu entry under `~/.local/share/applications`
+- with `--autostart`, adds a login entry under `~/.config/autostart`
+
+Before it copies anything, the script checks the dependencies. If one is missing, it prints the exact `apt`, `dnf` or `pacman` command to install it.
+
+If `~/.local/bin` isn't in your `PATH`, the script tells you. This can happen on some minimal Arch setups. Add the directory to your `PATH` to run `smanager` from a terminal. The menu entry works either way.
+
+### Uninstall
 
 ```sh
 ./install.sh --uninstall
 ```
+
+This removes the program, the menu and autostart entries, and the fonts.
+
+### Desktop notes
+
+- **System tray.** The tray icon uses the XEmbed system tray, so it needs an X11 session and a panel that supports XEmbed.
+  - It works out of the box on XFCE, MATE, Cinnamon, LXDE/LXQt and Budgie.
+  - On KDE Plasma, Plasma's XEmbed proxy shows the icon.
+  - On GNOME, including Fedora Workstation, the icon only appears on X11 with the *AppIndicator and KStatusNotifierItem Support* extension.
+  - On Wayland sessions, the tray icon isn't available, and closing the window quits smanager. Everything else works normally.
+- **Media tab.** Firefox, Chrome and Chromium publish their media controls over MPRIS by default on Linux, and so do Spotify, VLC and most music players.
 
 ## Usage
 
@@ -181,6 +237,7 @@ Levels above 100% amplify the signal in software. At high levels the audio can c
 ## Tested on
 
 - Debian 13 (trixie), XFCE, X11
+- Fedora and Arch: not yet tested on a real system. Their package names were checked against the official Fedora and Arch repositories.
 - PipeWire 1.4.5 with pipewire-pulse, pactl 17.0
 - Python 3.13, GTK 3.24
 - Firefox (YouTube) as an MPRIS player

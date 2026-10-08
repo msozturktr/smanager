@@ -33,14 +33,25 @@ if [ "$1" = "--uninstall" ]; then
     exit 0
 fi
 
+# package names per distribution: <pactl/parec> <GTK 3 bindings> <cairo bindings>
+if command -v apt-get >/dev/null 2>&1; then
+    pm="sudo apt install"; pkg_pa="pulseaudio-utils"; pkg_gtk="python3-gi gir1.2-gtk-3.0"; pkg_cairo="python3-gi-cairo"
+elif command -v dnf >/dev/null 2>&1; then
+    pm="sudo dnf install"; pkg_pa="pulseaudio-utils"; pkg_gtk="python3-gobject gtk3"; pkg_cairo="python3-cairo"
+elif command -v pacman >/dev/null 2>&1; then
+    pm="sudo pacman -S --needed"; pkg_pa="libpulse"; pkg_gtk="python-gobject gtk3"; pkg_cairo="python-cairo"
+else
+    pm=""; pkg_pa="pactl/parec (PulseAudio client tools)"; pkg_gtk="PyGObject + GTK 3"; pkg_cairo="pycairo"
+fi
+
 missing=""
-command -v pactl >/dev/null 2>&1 || missing="$missing pulseaudio-utils"
+{ command -v pactl && command -v parec; } >/dev/null 2>&1 || missing="$missing $pkg_pa"
 python3 -c "import gi; gi.require_version('Gtk', '3.0'); from gi.repository import Gtk" 2>/dev/null \
-    || missing="$missing python3-gi gir1.2-gtk-3.0"
-python3 -c "import gi; gi.require_foreign('cairo')" 2>/dev/null || missing="$missing python3-gi-cairo"
+    || missing="$missing $pkg_gtk"
+python3 -c "import gi; gi.require_foreign('cairo')" 2>/dev/null || missing="$missing $pkg_cairo"
 if [ -n "$missing" ]; then
-    echo "Missing packages:$missing"
-    echo "Install them with: sudo apt install$missing"
+    echo "Missing dependencies:$missing"
+    [ -n "$pm" ] && echo "Install them with: $pm$missing"
     exit 1
 fi
 
