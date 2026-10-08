@@ -57,6 +57,15 @@ def parse_list(kind):
     return items
 
 
+def _die_with_parent():
+    """Alt süreç, ana program ölünce (kill -9 dahil) kendiliğinden kapansın."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").prctl(1, 15)  # PR_SET_PDEATHSIG, SIGTERM
+    except OSError:
+        pass
+
+
 def default_sink():
     return pactl("get-default-sink").strip()
 
@@ -91,7 +100,12 @@ if len(sys.argv) > 1 and sys.argv[1] in ("artir", "azalt", "sessiz"):
 
 # ---------------------------------------------------------------- GUI
 
+import array  # noqa: E402
+import cmath  # noqa: E402
+import math  # noqa: E402
 import warnings  # noqa: E402
+
+import cairo  # noqa: E402
 
 import gi  # noqa: E402
 
@@ -101,71 +115,176 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GLib, Gtk  # noqa: E402
 
-CSS = b"""
-window.ses { background: #14161c; color: #e6e8ee; }
+CYAN = (0.0, 0.94, 1.0)
+VIOLET = (0.66, 0.33, 0.97)
+MAGENTA = (0.85, 0.27, 0.94)
+ACCENTS = ("cyan", "magenta", "violet")
+
+CSS = """
+* { font-family: "Space Grotesk", "Noto Sans", sans-serif; }
+.mono, scale marks, scale mark { font-family: "JetBrains Mono", monospace; }
+
+window.ses {
+  color: #dfe2ef;
+  background-color: #04070d;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(0,240,255,0.035) 0px, rgba(0,240,255,0.035) 1px,
+                              transparent 1px, transparent 24px),
+    repeating-linear-gradient(90deg, rgba(0,240,255,0.035) 0px, rgba(0,240,255,0.035) 1px,
+                              transparent 1px, transparent 24px);
+}
+window.ses scrolledwindow, window.ses viewport { background: transparent; border: none; }
+
 headerbar.ses-bar {
-  background: #14161c; border: none; box-shadow: none; padding: 4px 10px;
+  background: #090d16; border: none; box-shadow: none; padding: 6px 12px;
+  border-bottom: 1px solid rgba(0,240,255,0.15);
 }
-headerbar.ses-bar .title { font-weight: 700; font-size: 15px; color: #e6e8ee; }
-headerbar.ses-bar button { color: #9aa1b2; }
+headerbar.ses-bar button { color: #94a3b8; background: transparent; border: none; box-shadow: none; }
+headerbar.ses-bar button:hover { color: #00f0ff; }
+.app-title { font-weight: 700; font-size: 15px; letter-spacing: 1px; color: #00f0ff; }
+.app-sub { font-size: 10px; letter-spacing: 1px; color: #94a3b8; }
 
-.card {
-  background: #1d2029; border-radius: 18px; padding: 18px 20px;
-  border: 1px solid #262a35;
+.chip {
+  font-size: 10px; letter-spacing: 1px; font-weight: 500;
+  padding: 3px 10px; border-radius: 9999px; color: #94a3b8;
+  background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.08);
 }
-.hero { background-image: linear-gradient(160deg, #1f2a3a 0%, #1d2029 70%); }
-.hero.boost { background-image: linear-gradient(160deg, #3a2e1a 0%, #1d2029 70%); }
-.hero.max   { background-image: linear-gradient(160deg, #3d1d22 0%, #1d2029 70%); }
+.chip.cyan    { color: #00f0ff; border-color: rgba(0,240,255,0.45); }
+.chip.magenta { color: #f0abfc; border-color: rgba(217,70,239,0.55); }
+.chip.violet  { color: #c4a1ff; border-color: rgba(168,85,247,0.55); }
+.chip.live    { color: #00f0ff; border-color: rgba(0,240,255,0.6);
+                box-shadow: 0 0 12px -2px rgba(0,240,255,0.5); }
 
-.big-pct { font-size: 56px; font-weight: 800; color: #6cc4ff; }
-.boost .big-pct { color: #ffb547; }
-.max .big-pct   { color: #ff5c6c; }
-.big-pct.muted, .boost .big-pct.muted, .max .big-pct.muted { color: #5b6172; }
-.pct-sign { font-size: 22px; font-weight: 700; color: #7c8396; }
-.hint { color: #7c8396; font-size: 12px; }
-.warn { color: #ffb547; font-size: 12px; font-weight: 600; }
-.max .warn { color: #ff5c6c; }
-.section { color: #7c8396; font-size: 12px; font-weight: 700; letter-spacing: 1px; }
-.row-name { font-weight: 600; }
-.row-sub { color: #7c8396; font-size: 11px; }
-.row-pct { font-weight: 700; color: #b8bfd0; min-width: 48px; }
+.tile {
+  background: rgba(9,13,22,0.85); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; padding: 10px 12px;
+}
+.tile-label { font-size: 10px; letter-spacing: 1px; color: #94a3b8; }
+.tile-value { font-size: 13px; font-weight: 600; letter-spacing: 1px; color: #00f0ff; }
+.tile-value.magenta { color: #f0abfc; }
+.tile-value.white { color: #f8fafc; }
 
+.pod {
+  background-color: rgba(9,13,22,0.82); border-radius: 32px; padding: 22px 22px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.pod.master {
+  background-image: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(168,85,247,0.04));
+  border-color: rgba(0,240,255,0.35);
+  box-shadow: 0 0 20px -4px rgba(0,240,255,0.25);
+}
+.pod.master.boost {
+  background-image: linear-gradient(135deg, rgba(168,85,247,0.12), rgba(0,240,255,0.04));
+  border-color: rgba(168,85,247,0.6);
+  box-shadow: 0 0 24px -4px rgba(168,85,247,0.35);
+}
+.pod.master.max {
+  background-image: linear-gradient(135deg, rgba(217,70,239,0.14), rgba(168,85,247,0.05));
+  border-color: rgba(217,70,239,0.8);
+  box-shadow: 0 0 30px rgba(217,70,239,0.35), inset 0 0 12px rgba(217,70,239,0.2);
+}
+.pod.master.muted { border-color: rgba(255,255,255,0.1); box-shadow: none; background-image: none; }
+
+.channel {
+  background-color: rgba(9,13,22,0.82); border-radius: 24px; padding: 14px 18px;
+  border: 1px solid rgba(255,255,255,0.08);
+}
+.channel.cyan    { border-color: rgba(0,240,255,0.25); }
+.channel.magenta { border-color: rgba(217,70,239,0.25); }
+.channel.violet  { border-color: rgba(168,85,247,0.25); }
+
+.section { font-size: 11px; letter-spacing: 2px; color: #94a3b8; font-weight: 500; }
+.section-accent { font-size: 11px; letter-spacing: 2px; color: #00f0ff; font-weight: 500; }
+.headline { font-size: 20px; font-weight: 600; color: #e6fbff; }
+
+.big-pct {
+  font-size: 64px; font-weight: 700; color: #00f0ff; letter-spacing: -2px;
+  text-shadow: 0 0 18px rgba(0,240,255,0.55);
+}
+.boost .big-pct { color: #c4a1ff; text-shadow: 0 0 18px rgba(168,85,247,0.6); }
+.max .big-pct   { color: #f0abfc; text-shadow: 0 0 22px rgba(217,70,239,0.75); }
+.muted .big-pct { color: #475569; text-shadow: none; }
+.pct-sign { font-size: 24px; font-weight: 600; color: #94a3b8; }
+.db-readout { font-size: 13px; letter-spacing: 1px; color: #94a3b8; }
+.warn { font-size: 11px; letter-spacing: 1px; color: #c4a1ff; }
+.max .warn { color: #f0abfc; }
+.muted .warn { color: #94a3b8; }
+
+.peak-big { font-size: 34px; font-weight: 700; color: #f8fafc; letter-spacing: -1px; }
+.peak-unit { font-size: 13px; color: #00f0ff; letter-spacing: 1px; }
+
+.dot { font-size: 12px; }
+.dot.cyan { color: #00f0ff; } .dot.magenta { color: #f0abfc; } .dot.violet { color: #c4a1ff; }
+.ch-name { font-size: 13px; font-weight: 600; letter-spacing: 0.5px; color: #f8fafc; }
+.ch-sub  { font-size: 11px; color: #94a3b8; letter-spacing: 0.5px; }
+.ch-val  { font-size: 20px; font-weight: 600; color: #00f0ff; }
+.ch-val.magenta { color: #f0abfc; } .ch-val.violet { color: #c4a1ff; }
+.ch-db   { font-size: 10px; color: #64748b; letter-spacing: 1px; }
+.empty   { font-size: 11px; letter-spacing: 1px; color: #475569; padding: 18px; }
+.hint    { font-size: 10px; letter-spacing: 1px; color: #475569; }
+
+/* kaydırıcılar */
 scale trough {
-  min-height: 8px; border-radius: 99px; background: #2b303d; border: none;
+  min-height: 6px; border-radius: 9999px; border: none;
+  background: rgba(255,255,255,0.1);
 }
-scale highlight {
-  border-radius: 99px; border: none;
-  background-image: linear-gradient(90deg, #3d8bfd, #6cc4ff);
-}
-.boost scale.main highlight { background-image: linear-gradient(90deg, #3d8bfd, #6cc4ff 33%, #ffb547); }
-.max scale.main highlight   { background-image: linear-gradient(90deg, #3d8bfd, #6cc4ff 33%, #ffb547 66%, #ff5c6c); }
-scale.loud highlight { background-image: linear-gradient(90deg, #6cc4ff, #ffb547); }
-scale.main trough { min-height: 14px; }
+scale highlight { border-radius: 9999px; border: none; background-image: linear-gradient(90deg, #00f0ff, #00f0ff); }
 scale slider {
-  min-width: 20px; min-height: 20px; border-radius: 99px; margin: -7px;
-  background: #ffffff; border: none; box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+  min-width: 18px; min-height: 18px; margin: -7px; border-radius: 9999px; border: none;
+  background: #00f0ff; box-shadow: 0 0 12px rgba(0,240,255,0.7);
 }
-scale.main slider { min-width: 26px; min-height: 26px; margin: -8px; }
-scale marks, scale mark { color: #5b6172; font-size: 10px; }
-scale.dim highlight { background-image: none; background: #4a5063; }
+scale.main trough { min-height: 8px; }
+scale.main slider { min-width: 26px; min-height: 26px; margin: -10px;
+  background: #e6fbff; box-shadow: 0 0 0 4px rgba(0,240,255,0.35), 0 0 18px rgba(0,240,255,0.8); }
+scale.main highlight { background-image: linear-gradient(90deg, #00f0ff, #00f0ff); }
+.boost scale.main highlight { background-image: linear-gradient(90deg, #00f0ff, #a855f7); }
+.max scale.main highlight   { background-image: linear-gradient(90deg, #00f0ff, #a855f7 60%, #d946ef); }
+.boost scale.main slider { box-shadow: 0 0 0 4px rgba(168,85,247,0.4), 0 0 18px rgba(168,85,247,0.8); }
+.max scale.main slider   { box-shadow: 0 0 0 4px rgba(217,70,239,0.45), 0 0 22px rgba(217,70,239,0.9); }
+.magenta scale highlight { background-image: linear-gradient(90deg, #d946ef, #f0abfc); }
+.magenta scale slider    { background: #f0abfc; box-shadow: 0 0 12px rgba(217,70,239,0.7); }
+.violet scale highlight  { background-image: linear-gradient(90deg, #a855f7, #c4a1ff); }
+.violet scale slider     { background: #c4a1ff; box-shadow: 0 0 12px rgba(168,85,247,0.7); }
+scale.dim highlight, .muted scale.main highlight { background-image: none; background: #334155; }
+scale.dim slider, .muted scale.main slider { background: #64748b; box-shadow: none; }
+scale marks, scale mark { color: #475569; font-size: 10px; }
+scale mark indicator { min-height: 0; min-width: 0; }
 
-button.preset {
-  background: #262a35; color: #c7cddb; border: none; border-radius: 99px;
-  padding: 4px 12px; font-weight: 600; box-shadow: none; text-shadow: none;
+/* düğmeler */
+button.pill {
+  font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500; letter-spacing: 1px;
+  background: rgba(15,23,42,0.8); color: #b9cacb; border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 9999px; padding: 5px 12px; box-shadow: none; text-shadow: none; -gtk-icon-shadow: none;
 }
-button.preset:hover { background: #313747; }
-button.preset.active { background: #3d8bfd; color: #fff; }
-button.round {
-  background: #262a35; border: none; border-radius: 99px; padding: 8px;
-  box-shadow: none; color: #e6e8ee;
+button.pill:hover { border-color: rgba(0,240,255,0.5); color: #00f0ff; }
+button.pill.active {
+  background: #00f0ff; color: #04070d; border-color: #00f0ff;
+  box-shadow: 0 0 18px rgba(0,240,255,0.6);
 }
-button.round:hover { background: #313747; }
-button.round.on { background: #ff5c6c; color: #fff; }
+button.mute {
+  font-family: "JetBrains Mono", monospace; font-size: 11px; letter-spacing: 1px;
+  background: rgba(217,70,239,0.08); color: #f0abfc; border: 1.5px solid rgba(217,70,239,0.6);
+  border-radius: 9999px; padding: 6px 14px; box-shadow: none; text-shadow: none;
+}
+button.mute:hover { background: rgba(217,70,239,0.18); }
+button.mute.on {
+  background: #d946ef; color: #04070d; border-color: #d946ef;
+  box-shadow: 0 0 22px rgba(217,70,239,0.7);
+}
+button.mute.small { padding: 3px 10px; min-width: 0; }
 
-combobox button, combobox box {
-  background: #262a35; color: #e6e8ee; border: none; border-radius: 10px; box-shadow: none;
+combobox button.combo {
+  font-family: "JetBrains Mono", monospace; font-size: 12px; letter-spacing: 0.5px;
+  background: rgba(15,23,42,0.8); color: #dfe2ef; border: 1px solid rgba(0,240,255,0.25);
+  border-radius: 9999px; padding: 6px 14px; box-shadow: none;
 }
-.empty { color: #5b6172; padding: 12px; }
+combobox button.combo:hover { border-color: rgba(0,240,255,0.6); }
+menu, .menu, combobox window menu {
+  background: #090d16; color: #dfe2ef; border: 1px solid rgba(0,240,255,0.25);
+}
+menuitem:hover { background: rgba(0,240,255,0.15); color: #00f0ff; }
+scrollbar, scrollbar trough { background: transparent; border: none; }
+scrollbar slider { background: rgba(0,240,255,0.25); border-radius: 9999px; min-width: 4px; }
 """
 
 
@@ -183,15 +302,302 @@ def vol_icon(v, muted):
     return "audio-volume-high"
 
 
-def icon_for(props):
-    theme = Gtk.IconTheme.get_default()
-    for name in (props.get("application.icon_name"),
-                 props.get("application.process.binary"),
-                 (props.get("application.name") or "").lower()):
-        if name and theme.has_icon(name):
-            return name
-    return "audio-x-generic"
+def pct_to_db(v):
+    # PulseAudio/PipeWire yazılım sesi kübik ölçekli: dB = 60·log10(v/100)
+    return 60 * math.log10(v / 100) if v > 0 else float("-inf")
 
+
+def fmt_db(db, unit=" dB"):
+    if db == float("-inf"):
+        return "-∞" + unit
+    return f"{db:+.1f}{unit}"
+
+
+def label(text="", *classes, xalign=0.0, **kw):
+    if "chip" in classes:
+        kw.setdefault("valign", Gtk.Align.CENTER)
+    lbl = Gtk.Label(label=text, xalign=xalign, **kw)
+    ctx = lbl.get_style_context()
+    for c in classes:
+        ctx.add_class(c)
+    return lbl
+
+
+def set_class(widget, cls, on):
+    ctx = widget.get_style_context()
+    (ctx.add_class if on else ctx.remove_class)(cls)
+
+
+# ---------------------------------------------------------------- analiz
+
+class Analyzer:
+    """Varsayılan çıkışın monitörünü `parec` ile okuyup
+    FFT bantlarını ve sol/sağ tepe seviyelerini hesaplar."""
+
+    RATE = 48000
+    N = 2048      # ~23 Hz çözünürlük; gerçel FFT hilesiyle N/2 karmaşık FFT'ye iner
+    BANDS = 28
+    LO_HZ, HI_HZ = 40, 16000
+    FLOOR_DB = -72
+
+    def __init__(self):
+        n = self.N
+        m = n // 2
+        self.window = [0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1)) for i in range(n)]
+        self.rev = [int(f"{i:0{m.bit_length() - 1}b}"[::-1], 2) for i in range(m)]
+        self.post = [cmath.exp(-2j * math.pi * k / n) for k in range(m)]
+        self.twiddles = []
+        size = 2
+        while size <= m:
+            self.twiddles.append((size, [cmath.exp(-2j * math.pi * k / size) for k in range(size // 2)]))
+            size *= 2
+        ratio = self.HI_HZ / self.LO_HZ
+        edges = [self.LO_HZ * ratio ** (i / self.BANDS) for i in range(self.BANDS + 1)]
+        self.bins = []
+        for lo, hi in zip(edges, edges[1:]):
+            a = max(1, round(lo * n / self.RATE))
+            b = max(a + 1, round(hi * n / self.RATE))
+            self.bins.append((a, b))
+        self.ref = 65536 * n / 4  # tam ölçek sinüs (L+R) için Hann penceresi sonrası genlik
+        self.levels = [0.0] * self.BANDS
+        self.peak = [float("-inf")] * 2
+        self.proc = None
+        self.device = None
+
+    def start(self, device):
+        if self.proc and self.device == device:
+            return
+        self.stop()
+        self.device = device
+        try:
+            self.proc = subprocess.Popen(
+                ["parec", "-d", device, "--format=s16le", f"--rate={self.RATE}", "--channels=2",
+                 "--latency-msec=20", "--client-name=ses-yoneticisi-analiz"],
+                env=ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                preexec_fn=_die_with_parent)
+        except OSError:
+            self.proc = None
+            return
+        threading.Thread(target=self._run, args=(self.proc,), daemon=True).start()
+
+    def stop(self):
+        if self.proc:
+            self.proc.terminate()
+            self.proc = None
+        self.device = None
+        self.levels = [0.0] * self.BANDS
+        self.peak = [float("-inf")] * 2
+
+    def _run(self, proc):
+        # 2048 karelik bloklar ≈ saniyede 23; her ikincisini işle (~12/sn) ki eski işlemcide hafif kalsın
+        size = self.N * 4
+        skip = False
+        while self.proc is proc:
+            buf = proc.stdout.read(size)
+            if len(buf) < size:
+                break
+            if not skip:
+                self._process(buf)
+            skip = not skip
+
+    def _fft(self, a):
+        rev = self.rev
+        a = [a[rev[i]] for i in range(len(a))]
+        for size, w in self.twiddles:
+            half = size // 2
+            for start in range(0, len(a), size):
+                for k in range(half):
+                    i, j = start + k, start + k + half
+                    v = a[j] * w[k]
+                    u = a[i]
+                    a[i] = u + v
+                    a[j] = u - v
+        return a
+
+    def _process(self, buf):
+        s = array.array("h")
+        s.frombytes(buf)
+        left, right = s[0::2], s[1::2]
+        peaks = []
+        for ch in (left, right):
+            p = max(max(ch), -min(ch))
+            peaks.append(20 * math.log10(p / 32768) if p else float("-inf"))
+        self.peak = peaks
+        if peaks[0] == peaks[1] == float("-inf"):
+            self.levels = [0.0] * self.BANDS
+            return
+        w = self.window
+        x = [(left[i] + right[i]) * w[i] for i in range(self.N)]
+        # gerçel giriş: çift/tek örnekleri tek karmaşık diziye paketle
+        z = self._fft([complex(x[2 * i], x[2 * i + 1]) for i in range(self.N // 2)])
+        m = len(z)
+        post = self.post
+        mags = []
+        for k in range(m):
+            a, b = z[k], z[-k % m].conjugate()
+            mags.append(abs((a + b) * 0.5 - 0.5j * post[k] * (a - b)))
+        levels = []
+        for a, b in self.bins:
+            m = max(mags[a:b])
+            db = 20 * math.log10(m / self.ref) if m > 0 else self.FLOOR_DB
+            levels.append(min(1.0, max(0.0, (db - self.FLOOR_DB) / -self.FLOOR_DB)))
+        self.levels = levels
+
+
+class Spectrum(Gtk.DrawingArea):
+    """FFT çubukları + sağda sol/sağ tepe göstergeleri."""
+
+    GRID_DB = (-12, -24, -48)
+    FREQ_LABELS = ((50, "50Hz"), (200, "200Hz"), (1000, "1kHz"), (5000, "5kHz"), (15000, "15kHz"))
+
+    def __init__(self, analyzer):
+        super().__init__()
+        self.an = analyzer
+        self.set_size_request(-1, 170)
+        self.show_bars = [0.0] * analyzer.BANDS
+        self.caps = [0.0] * analyzer.BANDS
+        self.meters = [0.0, 0.0]
+        self._was_active = True
+        self.connect("draw", self.on_draw)
+
+    def tick(self):
+        for i, v in enumerate(self.an.levels):
+            self.show_bars[i] = v if v > self.show_bars[i] else self.show_bars[i] * 0.8
+            self.caps[i] = v if v > self.caps[i] else max(0.0, self.caps[i] - 0.018)
+        for i, db in enumerate(self.an.peak):
+            v = 0.0 if db == float("-inf") else max(0.0, min(1.0, (db + 60) / 60))
+            self.meters[i] = v if v > self.meters[i] else self.meters[i] * 0.85
+        active = max(self.show_bars + self.caps + self.meters) > 0.002
+        if active or self._was_active:
+            self.queue_draw()
+        self._was_active = active
+
+    @staticmethod
+    def _mix(t):
+        # cyan → magenta → violet → cyan, tasarımdaki gibi
+        stops = (CYAN, MAGENTA, VIOLET, CYAN)
+        t = t * (len(stops) - 1)
+        i = min(int(t), len(stops) - 2)
+        f = t - i
+        a, b = stops[i], stops[i + 1]
+        return tuple(a[k] + (b[k] - a[k]) * f for k in range(3))
+
+    def on_draw(self, _w, cr):
+        alloc = self.get_allocation()
+        w, h = alloc.width, alloc.height
+        meter_w = 44
+        gw, gh = w - meter_w - 8, h - 18
+
+        cr.select_font_face("JetBrains Mono")
+        cr.set_font_size(9)
+
+        # ızgara çizgileri
+        cr.set_line_width(1)
+        cr.set_source_rgba(0.58, 0.64, 0.72, 0.10)
+        for db in self.GRID_DB:
+            y = int(gh * (db / Analyzer.FLOOR_DB)) + 0.5
+            cr.move_to(0, y)
+            cr.line_to(gw, y)
+        cr.stroke()
+
+        # çubuklar
+        n = len(self.show_bars)
+        slot = gw / n
+        bw = max(2.0, slot * 0.62)
+        r = bw / 2
+        for i, v in enumerate(self.show_bars):
+            x = i * slot + (slot - bw) / 2
+            bh = max(bw, v * (gh - 4))
+            y = gh - bh
+            col = self._mix(i / (n - 1))
+            g = cairo.LinearGradient(0, y, 0, gh)
+            g.add_color_stop_rgba(0, *col, 0.95)
+            g.add_color_stop_rgba(1, *col, 0.18)
+            cr.set_source(g)
+            cr.new_sub_path()
+            cr.arc(x + r, y + r, r, math.pi, 1.5 * math.pi)
+            cr.arc(x + bw - r, y + r, r, 1.5 * math.pi, 2 * math.pi)
+            cr.line_to(x + bw, gh)
+            cr.line_to(x, gh)
+            cr.close_path()
+            cr.fill()
+            # tepe çizgisi
+            cy = gh - self.caps[i] * (gh - 4)
+            cr.set_source_rgba(*col, 0.9)
+            cr.rectangle(x, cy - 2, bw, 1.5)
+            cr.fill()
+
+        # ızgara etiketleri (çubukların üstünde, sağda)
+        for db in self.GRID_DB:
+            y = gh * (db / Analyzer.FLOOR_DB)
+            text = f"{db} dB"
+            ext = cr.text_extents(text)
+            cr.set_source_rgba(0.016, 0.027, 0.05, 0.75)
+            cr.rectangle(gw - ext.width - 6, y - ext.height - 4, ext.width + 6, ext.height + 3)
+            cr.fill()
+            cr.set_source_rgba(0.39, 0.45, 0.55, 1)
+            cr.move_to(gw - ext.width - 3, y - 3)
+            cr.show_text(text)
+
+        # frekans etiketleri
+        lo, hi = Analyzer.LO_HZ, Analyzer.HI_HZ
+        cr.set_source_rgba(0.39, 0.45, 0.55, 1)
+        for f, text in self.FREQ_LABELS:
+            x = gw * math.log(f / lo) / math.log(hi / lo)
+            ext = cr.text_extents(text)
+            cr.move_to(min(max(0, x - ext.width / 2), gw - ext.width), h - 3)
+            cr.show_text(text)
+
+        # L / R göstergeleri
+        mx = w - meter_w
+        for k, (name, v) in enumerate(zip(("L", "R"), self.meters)):
+            x = mx + 6 + k * 20
+            cr.set_source_rgba(1, 1, 1, 0.08)
+            self._round_rect(cr, x, 0, 10, gh, 5)
+            cr.fill()
+            if v > 0:
+                g = cairo.LinearGradient(0, gh, 0, 0)
+                g.add_color_stop_rgb(0, *CYAN)
+                g.add_color_stop_rgb(0.7, *VIOLET)
+                g.add_color_stop_rgb(1, *MAGENTA)
+                cr.set_source(g)
+                self._round_rect(cr, x, gh - v * gh, 10, v * gh, 5)
+                cr.fill()
+            cr.set_source_rgba(0.58, 0.64, 0.72, 1)
+            cr.move_to(x + 2, h - 3)
+            cr.show_text(name)
+
+    @staticmethod
+    def _round_rect(cr, x, y, w, h, r):
+        r = min(r, h / 2, w / 2)
+        cr.new_sub_path()
+        cr.arc(x + w - r, y + r, r, -math.pi / 2, 0)
+        cr.arc(x + w - r, y + h - r, r, 0, math.pi / 2)
+        cr.arc(x + r, y + h - r, r, math.pi / 2, math.pi)
+        cr.arc(x + r, y + r, r, math.pi, 1.5 * math.pi)
+        cr.close_path()
+
+
+class WaveIcon(Gtk.DrawingArea):
+    """Başlıktaki küçük dalga simgesi."""
+
+    def __init__(self):
+        super().__init__()
+        self.set_size_request(22, 22)
+        self.connect("draw", self.on_draw)
+
+    def on_draw(self, _w, cr):
+        cr.set_source_rgb(*CYAN)
+        cr.set_line_width(2.2)
+        cr.set_line_cap(1)  # yuvarlak
+        for i, hh in enumerate((6, 12, 18, 12, 8)):
+            x = 3 + i * 4
+            cr.move_to(x, 11 - hh / 2)
+            cr.line_to(x, 11 + hh / 2)
+        cr.stroke()
+
+
+# ---------------------------------------------------------------- bileşenler
 
 class VolumeSlider(Gtk.Scale):
     """Kullanıcı sürüklerken dışarıdan gelen güncellemeleri yok sayan,
@@ -203,13 +609,10 @@ class VolumeSlider(Gtk.Scale):
         self.set_draw_value(False)
         self.set_hexpand(True)
         self.set_round_digits(0)
-        ctx = self.get_style_context()
         if main:
-            ctx.add_class("main")
-            for m in (100, 200):
-                self.add_mark(m, Gtk.PositionType.BOTTOM, f"{m}%")
-        else:
-            self.add_mark(100, Gtk.PositionType.BOTTOM, None)
+            self.get_style_context().add_class("main")
+            for m, text in ((0, "%0"), (100, "%100 · UNITY"), (200, "%200"), (300, "%300")):
+                self.add_mark(m, Gtk.PositionType.BOTTOM, text)
         self._on_change = on_change
         self._dragging = False
         self._quiet_until = 0
@@ -217,6 +620,19 @@ class VolumeSlider(Gtk.Scale):
         self._hid = self.connect("value-changed", self._changed)
         self.connect("button-press-event", lambda *a: setattr(self, "_dragging", True))
         self.connect("button-release-event", self._released)
+        self.connect("scroll-event", self._scroll)
+
+    def _scroll(self, _w, ev):
+        # tekerlek sesi değiştirmesin, sayfayı kaydırsın
+        sw = self.get_ancestor(Gtk.ScrolledWindow)
+        if sw:
+            adj = sw.get_vadjustment()
+            if ev.direction == Gdk.ScrollDirection.SMOOTH:
+                delta = ev.get_scroll_deltas()[2] * 60
+            else:
+                delta = 60 if ev.direction == Gdk.ScrollDirection.DOWN else -60
+            adj.set_value(adj.get_value() + delta)
+        return True
 
     def _released(self, *a):
         self._dragging = False
@@ -228,20 +644,12 @@ class VolumeSlider(Gtk.Scale):
         if self._pending is None:
             GLib.timeout_add(35, self._flush)
         self._pending = v
-        self._paint(v)
 
     def _flush(self):
         v, self._pending = self._pending, None
         if v is not None:
             self._on_change(v)
         return False
-
-    def _paint(self, v):
-        ctx = self.get_style_context()
-        if v > 100:
-            ctx.add_class("loud")
-        else:
-            ctx.remove_class("loud")
 
     def set_external(self, v):
         if self._dragging or GLib.get_monotonic_time() < self._quiet_until:
@@ -251,61 +659,75 @@ class VolumeSlider(Gtk.Scale):
         self.handler_block(self._hid)
         self.set_value(v)
         self.handler_unblock(self._hid)
-        self._paint(v)
 
     def set_dim(self, dim):
+        set_class(self, "dim", dim)
+
+
+class ChannelRow(Gtk.Box):
+    """Uygulama ya da mikrofon kanalı kartı."""
+
+    def __init__(self, accent, title, sub, on_volume, on_mute):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.accent = None
         ctx = self.get_style_context()
-        (ctx.add_class if dim else ctx.remove_class)("dim")
+        ctx.add_class("channel")
 
-
-class StreamRow(Gtk.Box):
-    """Uygulama veya mikrofon satırı."""
-
-    def __init__(self, icon, name, sub, on_volume, on_mute):
-        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-        top = Gtk.Box(spacing=10)
-        self.icon = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR)
-        top.pack_start(self.icon, False, False, 0)
-        labels = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.name = Gtk.Label(label=name, xalign=0, ellipsize=3)
-        self.name.get_style_context().add_class("row-name")
-        self.sub = Gtk.Label(label=sub, xalign=0, ellipsize=3)
-        self.sub.get_style_context().add_class("row-sub")
-        labels.pack_start(self.name, False, False, 0)
-        labels.pack_start(self.sub, False, False, 0)
-        top.pack_start(labels, True, True, 0)
-        self.pct = Gtk.Label(xalign=1)
-        self.pct.get_style_context().add_class("row-pct")
-        top.pack_start(self.pct, False, False, 0)
-        self.mute_btn = Gtk.Button()
-        self.mute_btn.get_style_context().add_class("round")
-        self.mute_btn.set_relief(Gtk.ReliefStyle.NONE)
-        self.mute_btn.connect("clicked", lambda *a: on_mute())
-        top.pack_start(self.mute_btn, False, False, 0)
+        top = Gtk.Box(spacing=8)
+        self.dot = label("●", "dot")
+        top.pack_start(self.dot, False, False, 0)
+        self.title = label(title, "ch-name", "mono", ellipsize=3)
+        top.pack_start(self.title, True, True, 0)
+        val_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.val = label("", "ch-val", "mono", xalign=1.0)
+        self.db = label("", "ch-db", "mono", xalign=1.0)
+        val_box.pack_start(self.val, False, False, 0)
+        val_box.pack_start(self.db, False, False, 0)
+        top.pack_end(val_box, False, False, 0)
         self.pack_start(top, False, False, 0)
 
-        def changed(v):
-            self.pct.set_text(f"%{v}")
-            on_volume(v)
-        self.slider = VolumeSlider(changed)
-        self.slider.connect("value-changed", lambda s: self.pct.set_text(f"%{clamp(s.get_value())}"))
-        self.pack_start(self.slider, False, False, 0)
+        self.sub = label(sub, "ch-sub", "mono", ellipsize=3)
+        self.pack_start(self.sub, False, False, 0)
 
-    def update(self, vol, muted, name=None, sub=None):
-        if name is not None:
-            self.name.set_text(name)
+        bottom = Gtk.Box(spacing=12)
+        self.slider = VolumeSlider(on_volume)
+        self.slider.connect("value-changed", lambda s: self._show_value(clamp(s.get_value())))
+        bottom.pack_start(self.slider, True, True, 0)
+        self.mute_btn = Gtk.Button(label="M", valign=Gtk.Align.CENTER)
+        self.mute_btn.get_style_context().add_class("mute")
+        self.mute_btn.get_style_context().add_class("small")
+        self.mute_btn.connect("clicked", lambda *a: on_mute())
+        bottom.pack_start(self.mute_btn, False, False, 0)
+        self.pack_start(bottom, False, False, 0)
+        self.set_accent(accent)
+
+    def set_accent(self, accent):
+        if accent == self.accent:
+            return
+        for w in (self, self.dot, self.val):
+            if self.accent:
+                w.get_style_context().remove_class(self.accent)
+            w.get_style_context().add_class(accent)
+        self.accent = accent
+
+    def _show_value(self, v):
+        self.val.set_text(f"%{v}")
+        self.db.set_text(fmt_db(pct_to_db(v)))
+
+    def update(self, vol, muted, title=None, sub=None):
+        if title is not None:
+            self.title.set_text(title)
         if sub is not None:
             self.sub.set_text(sub)
+            self.sub.set_visible(bool(sub))
         self.slider.set_external(vol)
         self.slider.set_dim(muted)
-        if not self.slider._dragging:
-            self.pct.set_text(f"%{clamp(self.slider.get_value())}")
-        self.mute_btn.set_image(Gtk.Image.new_from_icon_name(
-            vol_icon(vol, muted) + "-symbolic", Gtk.IconSize.BUTTON))
-        ctx = self.mute_btn.get_style_context()
-        (ctx.add_class if muted else ctx.remove_class)("on")
+        self._show_value(clamp(self.slider.get_value()))
+        set_class(self.mute_btn, "on", muted)
         self.mute_btn.set_tooltip_text("Sesi aç" if muted else "Sessize al")
 
+
+# ---------------------------------------------------------------- uygulama
 
 class SesYoneticisi(Gtk.Application):
     def __init__(self):
@@ -315,6 +737,9 @@ class SesYoneticisi(Gtk.Application):
         self.app_rows = {}
         self.mic_row = None
         self.source = None
+        self.analyzer = Analyzer()
+        self.subscriber = None
+        self._anim = None
         self._refresh_pending = False
         self._building_combo = False
 
@@ -324,12 +749,15 @@ class SesYoneticisi(Gtk.Application):
             self.show_window()
             return
         prov = Gtk.CssProvider()
-        prov.load_from_data(CSS)
+        prov.load_from_data(CSS.encode())
         Gtk.StyleContext.add_provider_for_screen(
             Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         Gtk.Settings.get_default().set_property("gtk-application-prefer-dark-theme", True)
         self.build_window()
         self.build_tray()
+        self.server = re.sub(r".*\(on (.*)\)", r"\1",
+                             re.search(r"Server Name: (.*)", pactl("info")).group(1)).upper()
+        self.server_lbl.set_text(f"TELEMETRİ // {self.server}")
         self.refresh()
         self.start_subscribe()
         if "--gizli" in sys.argv:
@@ -354,26 +782,53 @@ class SesYoneticisi(Gtk.Application):
         win = Gtk.ApplicationWindow(application=self)
         self.win = win
         win.get_style_context().add_class("ses")
-        win.set_default_size(440, 640)
+        win.set_default_size(500, 860)
         win.set_icon_name("multimedia-volume-control")
         win.connect("delete-event", self.on_close)
         win.connect("key-press-event", self.on_key)
+        win.connect("map-event", lambda *a: self.start_analyzer())
+        win.connect("unmap-event", lambda *a: self.stop_analyzer())
 
-        bar = Gtk.HeaderBar(title="Ses Yöneticisi", show_close_button=True)
+        # başlık çubuğu
+        bar = Gtk.HeaderBar(show_close_button=True)
         bar.get_style_context().add_class("ses-bar")
+        title_box = Gtk.Box(spacing=10)
+        title_box.pack_start(WaveIcon(), False, False, 0)
+        tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        tb.pack_start(label("SES DENETİM MERKEZİ", "app-title"), False, False, 0)
+        self.server_lbl = label("TELEMETRİ", "app-sub", "mono")
+        tb.pack_start(self.server_lbl, False, False, 0)
+        title_box.pack_start(tb, False, False, 0)
+        bar.pack_start(title_box)
+        bar.set_custom_title(Gtk.Box())
+        self.live_chip = label("○ BEKLEMEDE", "chip", "mono")
+        bar.pack_end(self.live_chip)
         win.set_titlebar(bar)
 
         scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
         win.add(scroll)
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin=16)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=18)
         scroll.add(root)
 
-        # --- ana kart
-        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        # telemetri kutucukları
+        tiles = Gtk.Box(spacing=10, homogeneous=True)
+        self.tile_rate = self.tile(tiles, "ÖRNEKLEME", "cyan")
+        self.tile_fmt = self.tile(tiles, "BİÇİM", "magenta")
+        self.tile_state = self.tile(tiles, "DURUM", "white")
+        root.pack_start(tiles, False, False, 0)
+
+        # --- ana çıkış kapsülü
+        hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         self.hero = hero
-        hero.get_style_context().add_class("card")
-        hero.get_style_context().add_class("hero")
+        hero.get_style_context().add_class("pod")
+        hero.get_style_context().add_class("master")
         root.pack_start(hero, False, False, 0)
+
+        head = Gtk.Box(spacing=8)
+        head.pack_start(label("ANA ÇIKIŞ // MASTER BUS", "section-accent", "mono"), True, True, 0)
+        self.db_chip = label("", "chip", "cyan", "mono")
+        head.pack_end(self.db_chip, False, False, 0)
+        hero.pack_start(head, False, False, 0)
 
         self.combo = Gtk.ComboBoxText()
         self.combo.connect("changed", self.on_device)
@@ -381,65 +836,87 @@ class SesYoneticisi(Gtk.Application):
 
         mid = Gtk.Box(spacing=12)
         pct_box = Gtk.Box(spacing=2)
-        self.big = Gtk.Label(label="0")
-        self.big.get_style_context().add_class("big-pct")
-        sign = Gtk.Label(label="%", valign=Gtk.Align.START, margin_top=14)
-        sign.get_style_context().add_class("pct-sign")
-        pct_box.pack_start(sign, False, False, 0)
+        pct_box.pack_start(label("%", "pct-sign", valign=Gtk.Align.START, margin_top=16), False, False, 0)
+        self.big = label("0", "big-pct")
         pct_box.pack_start(self.big, False, False, 0)
         mid.pack_start(pct_box, False, False, 0)
-        self.warn = Gtk.Label(xalign=0, wrap=True, valign=Gtk.Align.CENTER)
-        self.warn.get_style_context().add_class("warn")
-        mid.pack_start(self.warn, True, True, 0)
-        self.mute_btn = Gtk.Button(valign=Gtk.Align.CENTER)
-        self.mute_btn.get_style_context().add_class("round")
+        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
+        self.mute_btn = Gtk.Button(label="SESSİZ", halign=Gtk.Align.END)
+        self.mute_btn.get_style_context().add_class("mute")
         self.mute_btn.connect("clicked", lambda *a: self.toggle_mute())
-        mid.pack_end(self.mute_btn, False, False, 0)
+        right.pack_start(self.mute_btn, False, False, 0)
+        self.db_lbl = label("", "db-readout", "mono", xalign=1.0)
+        right.pack_start(self.db_lbl, False, False, 0)
+        mid.pack_end(right, False, False, 0)
         hero.pack_start(mid, False, False, 0)
+
+        self.warn = label("", "warn", "mono", wrap=True)
+        hero.pack_start(self.warn, False, False, 0)
 
         self.main_slider = VolumeSlider(self.set_master, main=True)
         self.main_slider.connect("value-changed", lambda s: self.paint_master(clamp(s.get_value())))
         hero.pack_start(self.main_slider, False, False, 0)
 
-        presets = Gtk.Box(spacing=6, halign=Gtk.Align.CENTER)
+        presets = Gtk.Box(spacing=6, homogeneous=True)
         self.preset_btns = {}
         for p in (25, 50, 100, 150, 200, 300):
             b = Gtk.Button(label=f"%{p}")
-            b.get_style_context().add_class("preset")
+            b.get_style_context().add_class("pill")
             b.connect("clicked", lambda _b, v=p: self.apply_preset(v))
-            presets.pack_start(b, False, False, 0)
+            presets.pack_start(b, True, True, 0)
             self.preset_btns[p] = b
         hero.pack_start(presets, False, False, 0)
 
-        # --- uygulamalar
-        root.pack_start(self.section("UYGULAMALAR"), False, False, 0)
-        apps_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        apps_card.get_style_context().add_class("card")
-        self.apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
-        self.apps_empty = Gtk.Label(label="Şu anda ses çalan bir uygulama yok")
-        self.apps_empty.get_style_context().add_class("empty")
-        apps_card.pack_start(self.apps_empty, False, False, 0)
-        apps_card.pack_start(self.apps_box, False, False, 0)
-        root.pack_start(apps_card, False, False, 0)
+        # --- spektrum kapsülü
+        spec = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        spec.get_style_context().add_class("pod")
+        sh = Gtk.Box(spacing=8)
+        sh.pack_start(label("FFT SPEKTRUM // 40 Hz – 16 kHz", "section", "mono"), True, True, 0)
+        sh.pack_end(label("CANLI MONİTÖR", "chip", "violet", "mono"), False, False, 0)
+        spec.pack_start(sh, False, False, 0)
+        peak_row = Gtk.Box(spacing=6)
+        peak_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        peak_col.pack_start(label("TEPE SEVİYESİ (PEAK)", "tile-label", "mono"), False, False, 0)
+        pv = Gtk.Box(spacing=6)
+        self.peak_lbl = label("-∞", "peak-big", "mono")
+        pv.pack_start(self.peak_lbl, False, False, 0)
+        pv.pack_start(label("dBFS", "peak-unit", "mono", valign=Gtk.Align.END, margin_bottom=6), False, False, 0)
+        peak_col.pack_start(pv, False, False, 0)
+        peak_row.pack_start(peak_col, True, True, 0)
+        self.lr_lbl = label("", "db-readout", "mono", xalign=1.0, valign=Gtk.Align.END, margin_bottom=8)
+        peak_row.pack_end(self.lr_lbl, False, False, 0)
+        spec.pack_start(peak_row, False, False, 0)
+        self.spectrum = Spectrum(self.analyzer)
+        spec.pack_start(self.spectrum, False, False, 0)
+        root.pack_start(spec, False, False, 0)
+
+        # --- kanal matrisi (uygulamalar)
+        mh = Gtk.Box(spacing=8, margin_top=4)
+        mh.pack_start(label("Kanal Matrisi", "headline"), True, True, 0)
+        self.apps_count = label("0 AKTİF", "section", "mono", valign=Gtk.Align.CENTER)
+        mh.pack_end(self.apps_count, False, False, 0)
+        root.pack_start(mh, False, False, 0)
+        self.apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        root.pack_start(self.apps_box, False, False, 0)
+        self.apps_empty = label("ŞU ANDA SES ÇALAN BİR UYGULAMA YOK", "empty", "mono", "channel", xalign=0.5)
+        root.pack_start(self.apps_empty, False, False, 0)
 
         # --- mikrofon
-        root.pack_start(self.section("MİKROFON"), False, False, 0)
-        mic_card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        mic_card.get_style_context().add_class("card")
-        self.mic_row = StreamRow("audio-input-microphone", "Mikrofon", "",
-                                 self.set_mic, self.toggle_mic)
-        mic_card.pack_start(self.mic_row, False, False, 0)
-        root.pack_start(mic_card, False, False, 0)
+        root.pack_start(label("GİRİŞ // MİKROFON", "section", "mono", margin_top=4), False, False, 0)
+        self.mic_row = ChannelRow("magenta", "MİKROFON", "", self.set_mic, self.toggle_mic)
+        root.pack_start(self.mic_row, False, False, 0)
 
-        hint = Gtk.Label(label="Kısayollar: ↑/↓ ±5  ·  M sessiz  ·  1–3 = %100/%200/%300",
-                         margin_top=4)
-        hint.get_style_context().add_class("hint")
-        root.pack_start(hint, False, False, 0)
+        root.pack_start(label("↑↓ ±5  ·  M SESSİZ  ·  1–3 = %100/%200/%300  ·  ESC GİZLE",
+                              "hint", "mono", xalign=0.5, margin_top=4), False, False, 0)
 
-    def section(self, text):
-        l = Gtk.Label(label=text, xalign=0, margin_start=6)
-        l.get_style_context().add_class("section")
-        return l
+    def tile(self, parent, title, color):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.get_style_context().add_class("tile")
+        box.pack_start(label(title, "tile-label", "mono"), False, False, 0)
+        val = label("—", "tile-value", color, "mono", ellipsize=3)
+        box.pack_start(val, False, False, 0)
+        parent.pack_start(box, True, True, 0)
+        return val
 
     def build_tray(self):
         self.tray = Gtk.StatusIcon()
@@ -448,6 +925,33 @@ class SesYoneticisi(Gtk.Application):
         self.tray.connect("scroll-event", self.on_tray_scroll)
         self.tray.connect("popup-menu", self.on_tray_menu)
         self.tray.set_visible(True)
+
+    # ---------------- analiz
+    def start_analyzer(self):
+        if self.sink:
+            self.analyzer.start(self.sink + ".monitor")
+        if not self._anim:
+            self._anim = GLib.timeout_add(50, self.animate)
+            self._anim_n = 0
+
+    def stop_analyzer(self):
+        self.analyzer.stop()
+        if self._anim:
+            GLib.source_remove(self._anim)
+            self._anim = None
+
+    def animate(self):
+        self.spectrum.tick()
+        self._anim_n += 1
+        if self._anim_n % 3 == 0:
+            pl, pr = self.analyzer.peak
+            top = max(pl, pr)
+            self.peak_lbl.set_text("-∞" if top == float("-inf") else f"{top:.1f}")
+            self.lr_lbl.set_text(f"L {fmt_db(pl, '')}  ·  R {fmt_db(pr, '')}")
+            live = top > -60
+            self.live_chip.set_text("● SİNYAL VAR" if live else "○ SESSİZLİK")
+            set_class(self.live_chip, "live", live)
+        return True
 
     # ---------------- olaylar
     def toggle_window(self):
@@ -474,10 +978,10 @@ class SesYoneticisi(Gtk.Application):
 
     def on_tray_menu(self, icon, button, time):
         menu = Gtk.Menu()
-        for label, cb in (("Pencereyi göster", self.show_window),
-                          ("Sessiz aç/kapat", self.toggle_mute),
-                          ("%100'e sıfırla", lambda: self.apply_preset(100))):
-            it = Gtk.MenuItem(label=label)
+        for text, cb in (("Pencereyi göster", self.show_window),
+                         ("Sessiz aç/kapat", self.toggle_mute),
+                         ("%100'e sıfırla", lambda: self.apply_preset(100))):
+            it = Gtk.MenuItem(label=text)
             it.connect("activate", lambda _i, f=cb: f())
             menu.append(it)
         menu.append(Gtk.SeparatorMenuItem())
@@ -543,23 +1047,27 @@ class SesYoneticisi(Gtk.Application):
 
     def paint_master(self, v):
         self.big.set_text(str(v))
+        db = fmt_db(pct_to_db(v))
+        self.db_lbl.set_text(f"KAZANÇ {db}")
+        self.db_chip.set_text(db)
         ctx = self.hero.get_style_context()
         ctx.remove_class("boost")
         ctx.remove_class("max")
         lvl = level_class(v)
         if lvl:
             ctx.add_class(lvl)
+        set_class(self.hero, "muted", self.muted)
         if self.muted:
-            self.warn.set_text("Sessiz")
+            self.warn.set_text("◼ ÇIKIŞ SESSİZDE")
         elif v > 200:
-            self.warn.set_text("Çok yüksek yükseltme — ses bozulabilir, hoparlöre dikkat!")
+            self.warn.set_text("▲ AŞIRI YÜKSELTME — KIRPILMA OLASI, HOPARLÖRE DİKKAT")
         elif v > 100:
-            self.warn.set_text("Yükseltilmiş ses (%100 üzeri)")
+            self.warn.set_text("△ YAZILIMSAL YÜKSELTME AKTİF (%100 ÜZERİ)")
         else:
             self.warn.set_text("")
+        self.warn.set_visible(bool(self.warn.get_text()))
         for p, b in self.preset_btns.items():
-            c = b.get_style_context()
-            (c.add_class if p == v else c.remove_class)("active")
+            set_class(b, "active", p == v)
         self.update_tray(v)
 
     def update_tray(self, v):
@@ -574,7 +1082,7 @@ class SesYoneticisi(Gtk.Application):
 
     def refresh(self):
         self._refresh_pending = False
-        self.sinks = [s for s in parse_list("sinks")]
+        self.sinks = parse_list("sinks")
         self.sink = default_sink()
         cur = next((s for s in self.sinks if s.get("Name") == self.sink), None)
 
@@ -590,16 +1098,19 @@ class SesYoneticisi(Gtk.Application):
             self.muted = cur["mute"]
             self.volume = cur["volume"]
             self.main_slider.set_external(self.volume)
-            self.main_slider.set_dim(self.muted)
-            self.big.get_style_context().remove_class("muted")
-            if self.muted:
-                self.big.get_style_context().add_class("muted")
-            self.mute_btn.set_image(Gtk.Image.new_from_icon_name(
-                vol_icon(self.volume, self.muted) + "-symbolic", Gtk.IconSize.LARGE_TOOLBAR))
-            mc = self.mute_btn.get_style_context()
-            (mc.add_class if self.muted else mc.remove_class)("on")
+            self.mute_btn.set_label("SESİ AÇ" if self.muted else "SESSİZ")
+            set_class(self.mute_btn, "on", self.muted)
             self.mute_btn.set_tooltip_text("Sesi aç (M)" if self.muted else "Sessize al (M)")
             self.paint_master(clamp(self.main_slider.get_value()))
+            m = re.match(r"(\w+) (\d+)ch (\d+)Hz", cur.get("Sample Specification", ""))
+            if m:
+                self.tile_rate.set_text(f"{int(m.group(3)) / 1000:g} kHz")
+                self.tile_fmt.set_text(f"{m.group(1).upper()} · {m.group(2)}CH")
+            state = cur.get("State", "")
+            self.tile_state.set_text({"RUNNING": "AKTİF", "IDLE": "BOŞTA",
+                                      "SUSPENDED": "BEKLEMEDE"}.get(state, state))
+            if self._anim:
+                self.analyzer.start(self.sink + ".monitor")
 
         self.refresh_apps()
         self.refresh_mic()
@@ -607,27 +1118,29 @@ class SesYoneticisi(Gtk.Application):
 
     def refresh_apps(self):
         inputs = parse_list("sink-inputs")
-        seen = set()
+        seen = []
         for si in inputs:
             p = si["props"]
-            if p.get("application.id") == "org.PulseAudio.pavucontrol":
-                continue
             idx = si["index"]
-            seen.add(idx)
+            seen.append(idx)
             name = p.get("application.name") or p.get("application.process.binary") or "Uygulama"
             sub = p.get("media.name", "")
             if idx not in self.app_rows:
-                row = StreamRow(
-                    icon_for(p), name, sub,
+                row = ChannelRow(
+                    "cyan", name, sub,
                     lambda v, i=idx: pactl("set-sink-input-volume", i, f"{v}%", wait=False),
                     lambda i=idx: pactl("set-sink-input-mute", i, "toggle", wait=False))
                 self.app_rows[idx] = row
                 self.apps_box.pack_start(row, False, False, 0)
                 row.show_all()
-            self.app_rows[idx].update(si["volume"], si["mute"], name, sub)
+            n = len(seen)
+            row = self.app_rows[idx]
+            row.set_accent(ACCENTS[(n - 1) % len(ACCENTS)])
+            row.update(si["volume"], si["mute"], f"KANAL {n:02d} — {name}", sub)
         for idx in list(self.app_rows):
             if idx not in seen:
                 self.app_rows.pop(idx).destroy()
+        self.apps_count.set_text(f"{len(self.app_rows)} AKTİF")
         self.apps_empty.set_visible(not self.app_rows)
         self.apps_empty.set_no_show_all(bool(self.app_rows))
 
@@ -637,12 +1150,21 @@ class SesYoneticisi(Gtk.Application):
         if src:
             self.mic_row.update(src["volume"], src["mute"], sub=src.get("Description", ""))
 
+    def do_shutdown(self):
+        self.stop_analyzer()
+        if self.subscriber:
+            self.subscriber.terminate()
+        Gtk.Application.do_shutdown(self)
+
     def start_subscribe(self):
+        proc = subprocess.Popen(["pactl", "subscribe"], env=ENV, stdout=subprocess.PIPE,
+                                text=True, preexec_fn=_die_with_parent)
+        self.subscriber = proc
+
         def run():
-            proc = subprocess.Popen(["pactl", "subscribe"], env=ENV,
-                                    stdout=subprocess.PIPE, text=True)
             for line in proc.stdout:
-                if "client" not in line:
+                # analiz akışının kendi olayları (source-output, client) yenileme gerektirmez
+                if "client" not in line and "source-output" not in line:
                     GLib.idle_add(self.schedule_refresh)
         threading.Thread(target=run, daemon=True).start()
 
