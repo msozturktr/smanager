@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Ses Yöneticisi — PipeWire/PulseAudio için %300'e kadar ses kontrolü (GTK3).
+"""smanager — volume control up to 300% plus media control for PipeWire/PulseAudio (GTK3).
 
-Kullanım:
-  ses-yoneticisi            arayüzü aç (zaten açıksa öne getirir)
-  ses-yoneticisi artir [N]  varsayılan çıkışı N puan artır (varsayılan 5, en fazla 300)
-  ses-yoneticisi azalt [N]  varsayılan çıkışı N puan azalt
-  ses-yoneticisi sessiz     sessize al / aç
+Usage:
+  smanager             open the window (brings it to the front if already running)
+  smanager --hidden    start hidden in the system tray
+  smanager up [N]      raise the default output by N points (default 5, max 300)
+  smanager down [N]    lower the default output by N points
+  smanager mute        toggle mute
 """
 import os
 import re
@@ -29,7 +30,7 @@ def pactl(*args, wait=True):
 
 
 def parse_list(kind):
-    """`pactl list <kind>` çıktısını sözlük listesine çevirir."""
+    """Parse `pactl list <kind>` output into a list of dicts."""
     out = pactl("list", kind)
     items, cur, in_props = [], None, False
     for line in out.splitlines():
@@ -58,7 +59,7 @@ def parse_list(kind):
 
 
 def _die_with_parent():
-    """Alt süreç, ana program ölünce (kill -9 dahil) kendiliğinden kapansın."""
+    """Make a child process exit when the app dies (even on kill -9)."""
     try:
         import ctypes
         ctypes.CDLL("libc.so.6").prctl(1, 15)  # PR_SET_PDEATHSIG, SIGTERM
@@ -84,17 +85,17 @@ def cli(argv):
     cmd = argv[0]
     step = int(argv[1]) if len(argv) > 1 else 5
     sink = default_sink()
-    if cmd == "sessiz":
+    if cmd == "mute":
         pactl("set-sink-mute", sink, "toggle")
         return 0
     cur = next((s["volume"] for s in parse_list("sinks") if s.get("Name") == sink), 100)
-    new = clamp(cur + step if cmd == "artir" else cur - step)
+    new = clamp(cur + step if cmd == "up" else cur - step)
     pactl("set-sink-mute", sink, "0")
     pactl("set-sink-volume", sink, f"{new}%")
     return 0
 
 
-if len(sys.argv) > 1 and sys.argv[1] in ("artir", "azalt", "sessiz"):
+if len(sys.argv) > 1 and sys.argv[1] in ("up", "down", "mute"):
     sys.exit(cli(sys.argv[1:]))
 
 
@@ -113,7 +114,8 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gdk, GdkPixbuf, Gio, GLib, Gtk  # noqa: E402
 
 CYAN = (0.0, 0.94, 1.0)
 VIOLET = (0.66, 0.33, 0.97)
@@ -124,7 +126,7 @@ CSS = """
 * { font-family: "Space Grotesk", "Noto Sans", sans-serif; }
 .mono, scale marks, scale mark { font-family: "JetBrains Mono", monospace; }
 
-window.ses {
+window.smanager {
   color: #dfe2ef;
   background-color: #04070d;
   background-image:
@@ -133,14 +135,14 @@ window.ses {
     repeating-linear-gradient(90deg, rgba(0,240,255,0.035) 0px, rgba(0,240,255,0.035) 1px,
                               transparent 1px, transparent 24px);
 }
-window.ses scrolledwindow, window.ses viewport { background: transparent; border: none; }
+window.smanager scrolledwindow, window.smanager viewport { background: transparent; border: none; }
 
-headerbar.ses-bar {
+headerbar.app-bar {
   background: #090d16; border: none; box-shadow: none; padding: 6px 12px;
   border-bottom: 1px solid rgba(0,240,255,0.15);
 }
-headerbar.ses-bar button { color: #94a3b8; background: transparent; border: none; box-shadow: none; }
-headerbar.ses-bar button:hover { color: #00f0ff; }
+headerbar.app-bar button { color: #94a3b8; background: transparent; border: none; box-shadow: none; }
+headerbar.app-bar button:hover { color: #00f0ff; }
 .app-title { font-weight: 700; font-size: 15px; letter-spacing: 1px; color: #00f0ff; }
 .app-sub { font-size: 10px; letter-spacing: 1px; color: #94a3b8; }
 
@@ -223,7 +225,7 @@ headerbar.ses-bar button:hover { color: #00f0ff; }
 .empty   { font-size: 11px; letter-spacing: 1px; color: #475569; padding: 18px; }
 .hint    { font-size: 10px; letter-spacing: 1px; color: #475569; }
 
-/* kaydırıcılar */
+/* sliders */
 scale trough {
   min-height: 6px; border-radius: 9999px; border: none;
   background: rgba(255,255,255,0.1);
@@ -250,7 +252,7 @@ scale.dim slider, .muted scale.main slider { background: #64748b; box-shadow: no
 scale marks, scale mark { color: #475569; font-size: 10px; }
 scale mark indicator { min-height: 0; min-width: 0; }
 
-/* düğmeler */
+/* buttons */
 button.pill {
   font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500; letter-spacing: 1px;
   background: rgba(15,23,42,0.8); color: #b9cacb; border: 1px solid rgba(255,255,255,0.08);
@@ -284,6 +286,51 @@ menu, .menu, combobox window menu {
 }
 menuitem:hover { background: rgba(0,240,255,0.15); color: #00f0ff; }
 scrollbar, scrollbar trough { background: transparent; border: none; }
+
+/* tabs */
+stackswitcher.tabs {
+  background: rgba(9,13,22,0.9); border: 1px solid rgba(0,240,255,0.18);
+  border-radius: 9999px; padding: 4px;
+}
+stackswitcher.tabs button {
+  font-family: "JetBrains Mono", monospace; font-size: 12px; font-weight: 500; letter-spacing: 2px;
+  background: transparent; color: #94a3b8; border: none; box-shadow: none; text-shadow: none;
+  border-radius: 9999px; padding: 6px 22px; min-width: 110px; outline-width: 0;
+}
+stackswitcher.tabs button:hover { color: #00f0ff; }
+stackswitcher.tabs button:checked {
+  background: rgba(0,240,255,0.15); color: #00f0ff;
+  box-shadow: inset 0 0 0 1.5px #00f0ff, 0 0 16px -2px rgba(0,240,255,0.5);
+}
+
+/* media */
+.pod.player.playing {
+  background-image: linear-gradient(135deg, rgba(0,240,255,0.08), rgba(168,85,247,0.05));
+  border-color: rgba(0,240,255,0.35);
+  box-shadow: 0 0 20px -4px rgba(0,240,255,0.25);
+}
+.track-title  { font-size: 18px; font-weight: 700; color: #f8fafc; letter-spacing: -0.3px; }
+.track-artist { font-size: 12px; color: #00f0ff; letter-spacing: 1px; }
+.track-album  { font-size: 11px; color: #94a3b8; }
+.time { font-size: 11px; color: #94a3b8; letter-spacing: 1px; }
+button.pill.tiny { font-size: 10px; padding: 2px 10px; }
+button.pill:disabled { color: #334155; border-color: rgba(255,255,255,0.04); }
+button.ctrl {
+  min-width: 44px; min-height: 44px; padding: 0; border-radius: 9999px;
+  background: rgba(15,23,42,0.8); color: #dfe2ef; border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: none; -gtk-icon-shadow: none;
+}
+button.ctrl:hover { border-color: rgba(0,240,255,0.6); color: #00f0ff; }
+button.ctrl:disabled { color: #334155; border-color: rgba(255,255,255,0.04); }
+button.ctrl.play {
+  min-width: 60px; min-height: 60px; background: #00f0ff; color: #04070d; border: none;
+  box-shadow: 0 0 24px rgba(0,240,255,0.55);
+}
+button.ctrl.play:hover { background: #7df4ff; color: #04070d; }
+scale.seek trough { min-height: 4px; }
+scale.seek highlight { background-image: linear-gradient(90deg, #00f0ff, #a855f7); }
+scale.seek slider { min-width: 14px; min-height: 14px; margin: -6px; background: #e6fbff;
+  box-shadow: 0 0 10px rgba(0,240,255,0.8); }
 scrollbar slider { background: rgba(0,240,255,0.25); border-radius: 9999px; min-width: 4px; }
 """
 
@@ -303,7 +350,7 @@ def vol_icon(v, muted):
 
 
 def pct_to_db(v):
-    # PulseAudio/PipeWire yazılım sesi kübik ölçekli: dB = 60·log10(v/100)
+    # PulseAudio/PipeWire software volume is cubic: dB = 60·log10(v/100)
     return 60 * math.log10(v / 100) if v > 0 else float("-inf")
 
 
@@ -328,14 +375,14 @@ def set_class(widget, cls, on):
     (ctx.add_class if on else ctx.remove_class)(cls)
 
 
-# ---------------------------------------------------------------- analiz
+# ---------------------------------------------------------------- analysis
 
 class Analyzer:
-    """Varsayılan çıkışın monitörünü `parec` ile okuyup
-    FFT bantlarını ve sol/sağ tepe seviyelerini hesaplar."""
+    """Reads the default output's monitor with `parec` and computes
+    FFT bands and left/right peak levels."""
 
     RATE = 48000
-    N = 2048      # ~23 Hz çözünürlük; gerçel FFT hilesiyle N/2 karmaşık FFT'ye iner
+    N = 2048      # ~23 Hz resolution; the real-FFT trick reduces it to an N/2 complex FFT
     BANDS = 28
     LO_HZ, HI_HZ = 40, 16000
     FLOOR_DB = -72
@@ -358,7 +405,7 @@ class Analyzer:
             a = max(1, round(lo * n / self.RATE))
             b = max(a + 1, round(hi * n / self.RATE))
             self.bins.append((a, b))
-        self.ref = 65536 * n / 4  # tam ölçek sinüs (L+R) için Hann penceresi sonrası genlik
+        self.ref = 65536 * n / 4  # magnitude of a full-scale sine (L+R) after the Hann window
         self.levels = [0.0] * self.BANDS
         self.peak = [float("-inf")] * 2
         self.proc = None
@@ -372,7 +419,7 @@ class Analyzer:
         try:
             self.proc = subprocess.Popen(
                 ["parec", "-d", device, "--format=s16le", f"--rate={self.RATE}", "--channels=2",
-                 "--latency-msec=20", "--client-name=ses-yoneticisi-analiz"],
+                 "--latency-msec=20", "--client-name=smanager-analyzer"],
                 env=ENV, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 preexec_fn=_die_with_parent)
         except OSError:
@@ -389,7 +436,7 @@ class Analyzer:
         self.peak = [float("-inf")] * 2
 
     def _run(self, proc):
-        # 2048 karelik bloklar ≈ saniyede 23; her ikincisini işle (~12/sn) ki eski işlemcide hafif kalsın
+        # 2048-frame blocks ≈ 23 per second; process every other one (~12/s) to stay light on old CPUs
         size = self.N * 4
         skip = False
         while self.proc is proc:
@@ -428,7 +475,7 @@ class Analyzer:
             return
         w = self.window
         x = [(left[i] + right[i]) * w[i] for i in range(self.N)]
-        # gerçel giriş: çift/tek örnekleri tek karmaşık diziye paketle
+        # real input: pack even/odd samples into one complex sequence
         z = self._fft([complex(x[2 * i], x[2 * i + 1]) for i in range(self.N // 2)])
         m = len(z)
         post = self.post
@@ -445,15 +492,16 @@ class Analyzer:
 
 
 class Spectrum(Gtk.DrawingArea):
-    """FFT çubukları + sağda sol/sağ tepe göstergeleri."""
+    """FFT bars plus left/right peak meters on the right."""
 
     GRID_DB = (-12, -24, -48)
     FREQ_LABELS = ((50, "50Hz"), (200, "200Hz"), (1000, "1kHz"), (5000, "5kHz"), (15000, "15kHz"))
 
-    def __init__(self, analyzer):
+    def __init__(self, analyzer, compact=False):
         super().__init__()
         self.an = analyzer
-        self.set_size_request(-1, 170)
+        self.compact = compact
+        self.set_size_request(-1, 60 if compact else 170)
         self.show_bars = [0.0] * analyzer.BANDS
         self.caps = [0.0] * analyzer.BANDS
         self.meters = [0.0, 0.0]
@@ -474,7 +522,7 @@ class Spectrum(Gtk.DrawingArea):
 
     @staticmethod
     def _mix(t):
-        # cyan → magenta → violet → cyan, tasarımdaki gibi
+        # cyan → magenta → violet → cyan, as in the design
         stops = (CYAN, MAGENTA, VIOLET, CYAN)
         t = t * (len(stops) - 1)
         i = min(int(t), len(stops) - 2)
@@ -486,12 +534,12 @@ class Spectrum(Gtk.DrawingArea):
         alloc = self.get_allocation()
         w, h = alloc.width, alloc.height
         meter_w = 44
-        gw, gh = w - meter_w - 8, h - 18
+        gw, gh = (w, h) if self.compact else (w - meter_w - 8, h - 18)
 
         cr.select_font_face("JetBrains Mono")
         cr.set_font_size(9)
 
-        # ızgara çizgileri
+        # grid lines
         cr.set_line_width(1)
         cr.set_source_rgba(0.58, 0.64, 0.72, 0.10)
         for db in self.GRID_DB:
@@ -500,7 +548,7 @@ class Spectrum(Gtk.DrawingArea):
             cr.line_to(gw, y)
         cr.stroke()
 
-        # çubuklar
+        # bars
         n = len(self.show_bars)
         slot = gw / n
         bw = max(2.0, slot * 0.62)
@@ -521,13 +569,16 @@ class Spectrum(Gtk.DrawingArea):
             cr.line_to(x, gh)
             cr.close_path()
             cr.fill()
-            # tepe çizgisi
+            # peak cap
             cy = gh - self.caps[i] * (gh - 4)
             cr.set_source_rgba(*col, 0.9)
             cr.rectangle(x, cy - 2, bw, 1.5)
             cr.fill()
 
-        # ızgara etiketleri (çubukların üstünde, sağda)
+        if self.compact:
+            return
+
+        # grid labels (on top of the bars, right side)
         for db in self.GRID_DB:
             y = gh * (db / Analyzer.FLOOR_DB)
             text = f"{db} dB"
@@ -539,7 +590,7 @@ class Spectrum(Gtk.DrawingArea):
             cr.move_to(gw - ext.width - 3, y - 3)
             cr.show_text(text)
 
-        # frekans etiketleri
+        # frequency labels
         lo, hi = Analyzer.LO_HZ, Analyzer.HI_HZ
         cr.set_source_rgba(0.39, 0.45, 0.55, 1)
         for f, text in self.FREQ_LABELS:
@@ -548,7 +599,7 @@ class Spectrum(Gtk.DrawingArea):
             cr.move_to(min(max(0, x - ext.width / 2), gw - ext.width), h - 3)
             cr.show_text(text)
 
-        # L / R göstergeleri
+        # L / R meters
         mx = w - meter_w
         for k, (name, v) in enumerate(zip(("L", "R"), self.meters)):
             x = mx + 6 + k * 20
@@ -579,7 +630,7 @@ class Spectrum(Gtk.DrawingArea):
 
 
 class WaveIcon(Gtk.DrawingArea):
-    """Başlıktaki küçük dalga simgesi."""
+    """Small waveform icon in the header."""
 
     def __init__(self):
         super().__init__()
@@ -589,7 +640,7 @@ class WaveIcon(Gtk.DrawingArea):
     def on_draw(self, _w, cr):
         cr.set_source_rgb(*CYAN)
         cr.set_line_width(2.2)
-        cr.set_line_cap(1)  # yuvarlak
+        cr.set_line_cap(1)  # round
         for i, hh in enumerate((6, 12, 18, 12, 8)):
             x = 3 + i * 4
             cr.move_to(x, 11 - hh / 2)
@@ -597,11 +648,11 @@ class WaveIcon(Gtk.DrawingArea):
         cr.stroke()
 
 
-# ---------------------------------------------------------------- bileşenler
+# ---------------------------------------------------------------- widgets
 
 class VolumeSlider(Gtk.Scale):
-    """Kullanıcı sürüklerken dışarıdan gelen güncellemeleri yok sayan,
-    pactl çağrılarını kısan kaydırıcı."""
+    """Slider that ignores outside updates while the user drags it
+    and throttles pactl calls."""
 
     def __init__(self, on_change, main=False):
         adj = Gtk.Adjustment(value=0, lower=0, upper=MAX_VOL, step_increment=1, page_increment=5)
@@ -611,7 +662,7 @@ class VolumeSlider(Gtk.Scale):
         self.set_round_digits(0)
         if main:
             self.get_style_context().add_class("main")
-            for m, text in ((0, "%0"), (100, "%100 · UNITY"), (200, "%200"), (300, "%300")):
+            for m, text in ((0, "0%"), (100, "100% · UNITY"), (200, "200%"), (300, "300%")):
                 self.add_mark(m, Gtk.PositionType.BOTTOM, text)
         self._on_change = on_change
         self._dragging = False
@@ -623,7 +674,7 @@ class VolumeSlider(Gtk.Scale):
         self.connect("scroll-event", self._scroll)
 
     def _scroll(self, _w, ev):
-        # tekerlek sesi değiştirmesin, sayfayı kaydırsın
+        # the mouse wheel scrolls the page instead of changing the volume
         sw = self.get_ancestor(Gtk.ScrolledWindow)
         if sw:
             adj = sw.get_vadjustment()
@@ -665,7 +716,7 @@ class VolumeSlider(Gtk.Scale):
 
 
 class ChannelRow(Gtk.Box):
-    """Uygulama ya da mikrofon kanalı kartı."""
+    """Channel card for an application or the microphone."""
 
     def __init__(self, accent, title, sub, on_volume, on_mute):
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -711,7 +762,7 @@ class ChannelRow(Gtk.Box):
         self.accent = accent
 
     def _show_value(self, v):
-        self.val.set_text(f"%{v}")
+        self.val.set_text(f"{v}%")
         self.db.set_text(fmt_db(pct_to_db(v)))
 
     def update(self, vol, muted, title=None, sub=None):
@@ -724,14 +775,525 @@ class ChannelRow(Gtk.Box):
         self.slider.set_dim(muted)
         self._show_value(clamp(self.slider.get_value()))
         set_class(self.mute_btn, "on", muted)
-        self.mute_btn.set_tooltip_text("Sesi aç" if muted else "Sessize al")
+        self.mute_btn.set_tooltip_text("Unmute" if muted else "Mute")
 
 
-# ---------------------------------------------------------------- uygulama
+# ---------------------------------------------------------------- media (MPRIS)
 
-class SesYoneticisi(Gtk.Application):
+MPRIS_PREFIX = "org.mpris.MediaPlayer2."
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+ROOT_IFACE = "org.mpris.MediaPlayer2"
+SEEK_STEP = 10_000_000  # 10 s (microseconds)
+
+
+def fmt_time(us):
+    s = max(0, int(us // 1_000_000))
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def youtube_thumb(url):
+    m = re.search(r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/)|youtu\.be/)([\w-]{11})", url or "")
+    return f"https://i.ytimg.com/vi/{m.group(1)}/hqdefault.jpg" if m else None
+
+
+class Player:
+    """A single MPRIS player (browser tab, Spotify, VLC...)."""
+
+    def __init__(self, bus, name, on_change):
+        self.bus = bus
+        self.name = name
+        self.on_change = on_change
+        flags = Gio.DBusProxyFlags.GET_INVALIDATED_PROPERTIES
+        self.proxy = Gio.DBusProxy.new_sync(bus, flags, None, name, MPRIS_PATH, PLAYER_IFACE, None)
+        self.root = Gio.DBusProxy.new_sync(bus, flags, None, name, MPRIS_PATH, ROOT_IFACE, None)
+        self.identity = self._root_prop("Identity") or name[len(MPRIS_PREFIX):].split(".")[0]
+        self.desktop = (self._root_prop("DesktopEntry") or "").lower()
+        self.short = name[len(MPRIS_PREFIX):].split(".")[0].lower()
+        try:
+            self.pid = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                     "GetConnectionUnixProcessID", GLib.Variant("(s)", (name,)),
+                                     GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 500, None).unpack()[0]
+        except GLib.Error:
+            self.pid = None
+        self.position = 0
+        self.pos_time = GLib.get_monotonic_time()
+        self.proxy.connect("g-properties-changed", self._props_changed)
+        self.proxy.connect("g-signal", self._signal)
+        self.fetch_position()
+
+    def _root_prop(self, key):
+        v = self.root.get_cached_property(key)
+        return v.unpack() if v is not None else None
+
+    def prop(self, key, default=None):
+        v = self.proxy.get_cached_property(key)
+        return v.unpack() if v is not None else default
+
+    @property
+    def status(self):
+        return self.prop("PlaybackStatus", "Stopped")
+
+    @property
+    def meta(self):
+        return self.prop("Metadata", {}) or {}
+
+    @property
+    def length(self):
+        return int(self.meta.get("mpris:length", 0) or 0)
+
+    def current_position(self):
+        pos = self.position
+        if self.status == "Playing":
+            pos += (GLib.get_monotonic_time() - self.pos_time) * (self.prop("Rate", 1.0) or 1.0)
+        return min(pos, self.length) if self.length else pos
+
+    def _props_changed(self, _proxy, changed, _invalid):
+        keys = changed.keys()
+        if "Position" in keys:
+            self._set_position(changed["Position"])
+        elif "PlaybackStatus" in keys or "Metadata" in keys:
+            self.fetch_position()
+        self.on_change(self)
+
+    def _signal(self, _proxy, _sender, signal, params):
+        if signal == "Seeked":
+            self._set_position(params.unpack()[0])
+            self.on_change(self)
+
+    def _set_position(self, us):
+        self.position = int(us)
+        self.pos_time = GLib.get_monotonic_time()
+
+    def fetch_position(self):
+        def done(conn, res):
+            try:
+                self._set_position(conn.call_finish(res).unpack()[0])
+            except GLib.Error:
+                pass
+        self.bus.call(self.name, MPRIS_PATH, "org.freedesktop.DBus.Properties", "Get",
+                      GLib.Variant("(ss)", (PLAYER_IFACE, "Position")), GLib.VariantType("(v)"),
+                      Gio.DBusCallFlags.NONE, 500, None, done)
+
+    def call(self, method, args=None):
+        self.proxy.call(method, args, Gio.DBusCallFlags.NONE, 1000, None, None)
+
+    def seek_by(self, us):
+        self.call("Seek", GLib.Variant("(x)", (int(us),)))
+
+    def set_position(self, us):
+        trackid = self.meta.get("mpris:trackid")
+        if trackid:
+            self.call("SetPosition", GLib.Variant("(ox)", (trackid, int(us))))
+            self._set_position(us)
+
+    def raise_window(self):
+        self.root.call("Raise", None, Gio.DBusCallFlags.NONE, 1000, None, None)
+
+    def matches(self, si):
+        """Does the given PulseAudio stream (sink-input) belong to this player?"""
+        p = si["props"]
+        if self.pid and p.get("application.process.id") == str(self.pid):
+            return True
+        names = (p.get("application.name", "") + " " + p.get("application.process.binary", "")).lower()
+        return any(k and k in names for k in (self.short, self.desktop.split("-")[0]))
+
+
+class AlbumArt(Gtk.DrawingArea):
+    """Cover art / video thumbnail, or a neon placeholder."""
+
+    SIZE = 116
+    _cache = {}
+
     def __init__(self):
-        super().__init__(application_id="tr.msozturk.SesYoneticisi")
+        super().__init__()
+        self.set_size_request(self.SIZE, self.SIZE)
+        self.set_valign(Gtk.Align.START)
+        self.pixbuf = None
+        self.url = None
+        self.connect("draw", self.on_draw)
+
+    def set_url(self, url):
+        if url == self.url:
+            return
+        self.url = url
+        self.pixbuf = None
+        self.queue_draw()
+        if not url:
+            return
+        if url in self._cache:
+            self.pixbuf = self._cache[url]
+            return
+        if url.startswith("file://"):
+            path = GLib.filename_from_uri(url)[0]
+            try:
+                self._loaded(url, GdkPixbuf.Pixbuf.new_from_file(path))
+            except GLib.Error:
+                pass
+        elif url.startswith(("http://", "https://")):
+            threading.Thread(target=self._download, args=(url,), daemon=True).start()
+
+    def _download(self, url):
+        import urllib.request
+        try:
+            with urllib.request.urlopen(url, timeout=6) as r:
+                data = r.read(4_000_000)
+        except OSError:
+            return
+
+        def apply():
+            loader = GdkPixbuf.PixbufLoader()
+            try:
+                loader.write(data)
+                loader.close()
+                self._loaded(url, loader.get_pixbuf())
+            except GLib.Error:
+                pass
+        GLib.idle_add(apply)
+
+    def _loaded(self, url, pixbuf):
+        self._cache[url] = pixbuf
+        if url == self.url:
+            self.pixbuf = pixbuf
+            self.queue_draw()
+
+    def on_draw(self, _w, cr):
+        s = self.SIZE
+        Spectrum._round_rect(cr, 0, 0, s, s, 22)
+        cr.save()
+        cr.clip()
+        if self.pixbuf:
+            pw, ph = self.pixbuf.get_width(), self.pixbuf.get_height()
+            k = max(s / pw, s / ph)  # "cover" crop
+            cr.translate((s - pw * k) / 2, (s - ph * k) / 2)
+            cr.scale(k, k)
+            Gdk.cairo_set_source_pixbuf(cr, self.pixbuf, 0, 0)
+            cr.paint()
+        else:
+            g = cairo.LinearGradient(0, 0, s, s)
+            g.add_color_stop_rgba(0, *CYAN, 0.35)
+            g.add_color_stop_rgba(1, *VIOLET, 0.25)
+            cr.set_source(g)
+            cr.paint()
+            # music note: two oval heads + stems + beam
+            cr.set_source_rgba(0.9, 0.98, 1, 0.85)
+            for hx, hy in ((s * 0.36, s * 0.66), (s * 0.66, s * 0.60)):
+                cr.save()
+                cr.translate(hx, hy)
+                cr.scale(1.25, 1)
+                cr.arc(0, 0, s * 0.075, 0, 2 * math.pi)
+                cr.restore()
+                cr.fill()
+            cr.set_line_width(s * 0.035)
+            cr.move_to(s * 0.36 + s * 0.08, s * 0.66)
+            cr.line_to(s * 0.36 + s * 0.08, s * 0.30)
+            cr.move_to(s * 0.66 + s * 0.08, s * 0.60)
+            cr.line_to(s * 0.66 + s * 0.08, s * 0.24)
+            cr.stroke()
+            cr.move_to(s * 0.36 + s * 0.08 - s * 0.017, s * 0.30)
+            cr.line_to(s * 0.66 + s * 0.08 + s * 0.017, s * 0.24)
+            cr.line_to(s * 0.66 + s * 0.08 + s * 0.017, s * 0.32)
+            cr.line_to(s * 0.36 + s * 0.08 - s * 0.017, s * 0.38)
+            cr.close_path()
+            cr.fill()
+        cr.restore()
+        Spectrum._round_rect(cr, 0.5, 0.5, s - 1, s - 1, 22)
+        cr.set_source_rgba(*CYAN, 0.35)
+        cr.set_line_width(1)
+        cr.stroke()
+
+
+def icon_button(icon, *classes, size=Gtk.IconSize.BUTTON, tooltip=None):
+    b = Gtk.Button(valign=Gtk.Align.CENTER)
+    b.set_image(Gtk.Image.new_from_icon_name(icon, size))
+    for c in classes:
+        b.get_style_context().add_class(c)
+    if tooltip:
+        b.set_tooltip_text(tooltip)
+    return b
+
+
+class PlayerCard(Gtk.Box):
+    STATUS = {"Playing": ("● PLAYING", "live"),
+              "Paused": ("❚❚ PAUSED", "violet"),
+              "Stopped": ("■ STOPPED", None)}
+
+    def __init__(self, player):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.player = player
+        self.streams = []
+        self._seeking = False
+        self.get_style_context().add_class("pod")
+        self.get_style_context().add_class("player")
+
+        head = Gtk.Box(spacing=8)
+        self.ident = label(player.identity.upper(), "chip", "cyan", "mono")
+        head.pack_start(self.ident, False, False, 0)
+        self.host = label("", "chip", "mono")
+        head.pack_start(self.host, False, False, 0)
+        self.state = label("", "chip", "mono")
+        head.pack_end(self.state, False, False, 0)
+        self.pack_start(head, False, False, 0)
+
+        body = Gtk.Box(spacing=16)
+        self.art = AlbumArt()
+        body.pack_start(self.art, False, False, 0)
+        info = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4, valign=Gtk.Align.CENTER)
+        self.title = label("", "track-title", wrap=True, lines=3, ellipsize=3)
+        self.title.set_line_wrap_mode(2)  # WORD_CHAR
+        info.pack_start(self.title, False, False, 0)
+        self.artist = label("", "track-artist", "mono", ellipsize=3)
+        info.pack_start(self.artist, False, False, 0)
+        self.album = label("", "track-album", "mono", ellipsize=3)
+        info.pack_start(self.album, False, False, 0)
+        self.raise_btn = Gtk.Button(label="GO TO WINDOW ↗", halign=Gtk.Align.START, margin_top=6)
+        self.raise_btn.get_style_context().add_class("pill")
+        self.raise_btn.get_style_context().add_class("tiny")
+        self.raise_btn.connect("clicked", lambda *a: player.raise_window())
+        info.pack_start(self.raise_btn, False, False, 0)
+        body.pack_start(info, True, True, 0)
+        self.pack_start(body, False, False, 0)
+
+        # progress
+        self.progress = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.seek = Gtk.Scale(orientation=Gtk.Orientation.HORIZONTAL,
+                              adjustment=Gtk.Adjustment(lower=0, upper=1, step_increment=1, page_increment=10))
+        self.seek.set_draw_value(False)
+        self.seek.get_style_context().add_class("seek")
+        self.seek.connect("button-press-event", lambda *a: setattr(self, "_seeking", True))
+        self.seek.connect("button-release-event", self._seek_release)
+        self.progress.pack_start(self.seek, False, False, 0)
+        times = Gtk.Box()
+        self.t_pos = label("0:00", "time", "mono")
+        self.t_len = label("0:00", "time", "mono", xalign=1.0)
+        times.pack_start(self.t_pos, True, True, 0)
+        times.pack_end(self.t_len, True, True, 0)
+        self.progress.pack_start(times, False, False, 0)
+        self.pack_start(self.progress, False, False, 0)
+
+        # controls
+        ctrls = Gtk.Box(spacing=12, halign=Gtk.Align.CENTER)
+        self.back10 = Gtk.Button(label="−10s", valign=Gtk.Align.CENTER)
+        self.back10.get_style_context().add_class("pill")
+        self.back10.connect("clicked", lambda *a: player.seek_by(-SEEK_STEP))
+        self.prev = icon_button("media-skip-backward-symbolic", "ctrl", tooltip="Previous")
+        self.prev.connect("clicked", lambda *a: player.call("Previous"))
+        self.play = icon_button("media-playback-start-symbolic", "ctrl", "play",
+                                size=Gtk.IconSize.LARGE_TOOLBAR, tooltip="Play / pause")
+        self.play.connect("clicked", lambda *a: player.call("PlayPause"))
+        self.next = icon_button("media-skip-forward-symbolic", "ctrl", tooltip="Next")
+        self.next.connect("clicked", lambda *a: player.call("Next"))
+        self.fwd10 = Gtk.Button(label="+10s", valign=Gtk.Align.CENTER)
+        self.fwd10.get_style_context().add_class("pill")
+        self.fwd10.connect("clicked", lambda *a: player.seek_by(SEEK_STEP))
+        for w in (self.back10, self.prev, self.play, self.next, self.fwd10):
+            ctrls.pack_start(w, False, False, 0)
+        self.pack_start(ctrls, False, False, 0)
+
+        # app volume (PulseAudio stream)
+        self.vol_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        vh = Gtk.Box()
+        vh.pack_start(label("APP VOLUME", "tile-label", "mono"), True, True, 0)
+        self.vol_val = label("", "ch-val", "mono", xalign=1.0)
+        vh.pack_end(self.vol_val, False, False, 0)
+        self.vol_box.pack_start(vh, False, False, 0)
+        vr = Gtk.Box(spacing=12)
+        self.vol = VolumeSlider(self._set_volume)
+        self.vol.connect("value-changed", lambda s: self.vol_val.set_text(f"{clamp(s.get_value())}%"))
+        vr.pack_start(self.vol, True, True, 0)
+        self.mute = Gtk.Button(label="M", valign=Gtk.Align.CENTER)
+        for c in ("mute", "small"):
+            self.mute.get_style_context().add_class(c)
+        self.mute.connect("clicked", lambda *a: self._toggle_mute())
+        vr.pack_start(self.mute, False, False, 0)
+        self.vol_box.pack_start(vr, False, False, 0)
+        self.pack_start(self.vol_box, False, False, 0)
+        # widgets shown or hidden depending on the metadata: keep the window's show_all from re-showing them
+        for w in (self.host, self.artist, self.album, self.raise_btn):
+            w.set_no_show_all(True)
+        # these two boxes are hidden depending on state: keep show_all from opening them,
+        # but have their contents ready to show
+        for box in (self.progress, self.vol_box):
+            box.foreach(lambda w: w.show_all())
+            box.set_no_show_all(True)
+            box.hide()
+
+        self.update()
+
+    def _seek_release(self, *a):
+        self._seeking = False
+        if self.player.prop("CanSeek", False):
+            self.player.set_position(self.seek.get_value() * 1_000_000)
+
+    def _set_volume(self, v):
+        for si in self.streams:
+            pactl("set-sink-input-volume", si["index"], f"{v}%", wait=False)
+
+    def _toggle_mute(self):
+        target = "0" if all(si["mute"] for si in self.streams) else "1"
+        for si in self.streams:
+            pactl("set-sink-input-mute", si["index"], target, wait=False)
+
+    def bind_streams(self, streams):
+        self.streams = streams
+        if streams:
+            vol = max(si["volume"] for si in streams)
+            muted = all(si["mute"] for si in streams)
+            self.vol.set_external(vol)
+            self.vol.set_dim(muted)
+            self.vol_val.set_text(f"{clamp(self.vol.get_value())}%")
+            set_class(self.mute, "on", muted)
+        self.vol_box.set_visible(bool(streams))
+
+    def update(self):
+        p = self.player
+        meta = p.meta
+        title = " ".join(str(meta.get("xesam:title") or "Unknown track").split())
+        artist = meta.get("xesam:artist") or []
+        artist = ", ".join(artist) if isinstance(artist, list) else str(artist)
+        self.title.set_text(title)
+        self.artist.set_text(artist.upper())
+        self.artist.set_visible(bool(artist))
+        album = meta.get("xesam:album") or ""
+        self.album.set_text(album)
+        self.album.set_visible(bool(album))
+        url = meta.get("xesam:url") or ""
+        host = re.sub(r"^www\.", "", re.sub(r"^\w+://([^/]+).*", r"\1", url)) if "://" in url else ""
+        self.host.set_text(host.upper())
+        self.host.set_visible(bool(host))
+        self.art.set_url(meta.get("mpris:artUrl") or youtube_thumb(url))
+
+        status = p.status
+        text, cls = self.STATUS.get(status, (status.upper(), None))
+        self.state.set_text(text)
+        for c in ("live", "violet"):
+            set_class(self.state, c, c == cls)
+        set_class(self, "playing", status == "Playing")
+        self.play.set_image(Gtk.Image.new_from_icon_name(
+            "media-playback-pause-symbolic" if status == "Playing" else "media-playback-start-symbolic",
+            Gtk.IconSize.LARGE_TOOLBAR))
+        self.prev.set_sensitive(p.prop("CanGoPrevious", False))
+        self.next.set_sensitive(p.prop("CanGoNext", False))
+        self.play.set_sensitive(p.prop("CanPlay", False) or p.prop("CanPause", False))
+        can_seek = bool(p.prop("CanSeek", False))
+        self.back10.set_sensitive(can_seek)
+        self.fwd10.set_sensitive(can_seek)
+        self.raise_btn.set_visible(bool(p._root_prop("CanRaise")))
+        self.tick()
+
+    def tick(self):
+        length = self.player.length
+        has = length > 0
+        self.progress.set_visible(has)
+        if has:
+            pos = self.player.current_position()
+            adj = self.seek.get_adjustment()
+            adj.set_upper(length / 1_000_000)
+            if not self._seeking:
+                self.seek.set_value(pos / 1_000_000)
+            self.t_pos.set_text(fmt_time(self.seek.get_value() * 1_000_000))
+            self.t_len.set_text(fmt_time(length))
+            self.seek.set_sensitive(bool(self.player.prop("CanSeek", False)))
+
+
+class MediaPanel(Gtk.Box):
+    """Watches MPRIS players and shows a card for each one."""
+
+    def __init__(self):
+        super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.cards = {}
+        self.inputs = []
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.empty = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.empty.get_style_context().add_class("channel")
+        self.empty.pack_start(label("NOTHING IS PLAYING", "empty", "mono", xalign=0.5,
+                                    margin_bottom=0), False, False, 0)
+        self.empty.pack_start(label("Start a video or song in your browser and it will show up here.",
+                                    "ch-sub", xalign=0.5, margin_bottom=14), False, False, 0)
+        self.pack_start(self.empty, False, False, 0)
+        self.bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                  "/org/freedesktop/DBus", None, Gio.DBusSignalFlags.NONE,
+                                  self._owner_changed)
+        names = self.bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                   "ListNames", None, GLib.VariantType("(as)"),
+                                   Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+        for n in sorted(names):
+            self._add(n)
+        self._sync_empty()
+
+    def _owner_changed(self, _conn, _sender, _path, _iface, _signal, params):
+        name, _old, new = params.unpack()
+        if not name.startswith(MPRIS_PREFIX):
+            return
+        if new:
+            GLib.timeout_add(300, lambda: self._add(name) and False)  # give the player a moment to get ready
+        else:
+            card = self.cards.pop(name, None)
+            if card:
+                card.destroy()
+            self._sync_empty()
+
+    def _add(self, name):
+        if not name.startswith(MPRIS_PREFIX) or name in self.cards or "playerctld" in name:
+            return False
+        try:
+            player = Player(self.bus, name, self._changed)
+        except GLib.Error:
+            return False
+        card = PlayerCard(player)
+        self.cards[name] = card
+        self.pack_start(card, False, False, 0)
+        card.show_all()
+        card.update()
+        card.bind_streams([si for si in self.inputs if player.matches(si)])
+        self._sync_empty()
+        self._order()
+        return True
+
+    def _changed(self, player):
+        card = self.cards.get(player.name)
+        if card:
+            card.update()
+            self._order()
+
+    def _order(self):
+        rank = {"Playing": 0, "Paused": 1}
+        cards = sorted(self.cards.values(), key=lambda c: rank.get(c.player.status, 2))
+        for i, c in enumerate(cards):
+            self.reorder_child(c, i + 1)
+
+    def _sync_empty(self):
+        self.empty.set_visible(not self.cards)
+        self.empty.set_no_show_all(bool(self.cards))
+
+    def update_streams(self, inputs):
+        self.inputs = inputs
+        for card in self.cards.values():
+            card.bind_streams([si for si in inputs if card.player.matches(si)])
+
+    def tick(self):
+        for card in self.cards.values():
+            card.tick()
+
+    def resync_positions(self):
+        for card in self.cards.values():
+            if card.player.status == "Playing" and card.player.length:
+                card.player.fetch_position()
+
+    def primary(self):
+        """For keyboard/tray commands: the playing player, otherwise the first one."""
+        players = [c.player for c in self.cards.values()]
+        playing = [p for p in players if p.status == "Playing"]
+        return (playing or players or [None])[0]
+
+
+# ---------------------------------------------------------------- application
+
+class SManager(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id="io.github.msozturktr.smanager")
         self.win = None
         self.sinks, self.sink, self.muted, self.volume = [], None, False, 0
         self.app_rows = {}
@@ -743,7 +1305,7 @@ class SesYoneticisi(Gtk.Application):
         self._refresh_pending = False
         self._building_combo = False
 
-    # ---------------- yaşam döngüsü
+    # ---------------- lifecycle
     def do_activate(self):
         if self.win:
             self.show_window()
@@ -757,11 +1319,11 @@ class SesYoneticisi(Gtk.Application):
         self.build_tray()
         self.server = re.sub(r".*\(on (.*)\)", r"\1",
                              re.search(r"Server Name: (.*)", pactl("info")).group(1)).upper()
-        self.server_lbl.set_text(f"TELEMETRİ // {self.server}")
+        self.server_lbl.set_text(f"TELEMETRY // {self.server}")
         self.refresh()
         self.start_subscribe()
-        if "--gizli" in sys.argv:
-            # tepside başla; panel hazır değilse (simge görünmüyorsa) pencereyi aç
+        if "--hidden" in sys.argv:
+            # start in the tray; if the panel isn't ready (icon not shown), open the window
             self.hold()
             GLib.timeout_add_seconds(8, self.ensure_visible)
         else:
@@ -777,47 +1339,52 @@ class SesYoneticisi(Gtk.Application):
         self.win.show_all()
         self.win.present()
 
-    # ---------------- arayüz
+    # ---------------- interface
     def build_window(self):
         win = Gtk.ApplicationWindow(application=self)
         self.win = win
-        win.get_style_context().add_class("ses")
+        win.get_style_context().add_class("smanager")
         win.set_default_size(500, 860)
         win.set_icon_name("multimedia-volume-control")
+        win.set_title("smanager")
         win.connect("delete-event", self.on_close)
         win.connect("key-press-event", self.on_key)
         win.connect("map-event", lambda *a: self.start_analyzer())
         win.connect("unmap-event", lambda *a: self.stop_analyzer())
 
-        # başlık çubuğu
+        # header bar
         bar = Gtk.HeaderBar(show_close_button=True)
-        bar.get_style_context().add_class("ses-bar")
+        bar.get_style_context().add_class("app-bar")
         title_box = Gtk.Box(spacing=10)
         title_box.pack_start(WaveIcon(), False, False, 0)
         tb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        tb.pack_start(label("SES DENETİM MERKEZİ", "app-title"), False, False, 0)
-        self.server_lbl = label("TELEMETRİ", "app-sub", "mono")
+        tb.pack_start(label("SMANAGER", "app-title"), False, False, 0)
+        self.server_lbl = label("TELEMETRY", "app-sub", "mono")
         tb.pack_start(self.server_lbl, False, False, 0)
         title_box.pack_start(tb, False, False, 0)
         bar.pack_start(title_box)
         bar.set_custom_title(Gtk.Box())
-        self.live_chip = label("○ BEKLEMEDE", "chip", "mono")
+        self.live_chip = label("○ STANDBY", "chip", "mono")
         bar.pack_end(self.live_chip)
         win.set_titlebar(bar)
 
-        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
-        win.add(scroll)
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=18)
-        scroll.add(root)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        win.add(outer)
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.CROSSFADE, transition_duration=160)
+        switcher = Gtk.StackSwitcher(stack=self.stack, halign=Gtk.Align.CENTER, margin_top=14)
+        switcher.get_style_context().add_class("tabs")
+        outer.pack_start(switcher, False, False, 0)
+        outer.pack_start(self.stack, True, True, 0)
+        root = self.page("audio", "AUDIO")
 
-        # telemetri kutucukları
+        # telemetry tiles
         tiles = Gtk.Box(spacing=10, homogeneous=True)
-        self.tile_rate = self.tile(tiles, "ÖRNEKLEME", "cyan")
-        self.tile_fmt = self.tile(tiles, "BİÇİM", "magenta")
-        self.tile_state = self.tile(tiles, "DURUM", "white")
+        self.tile_rate = self.tile(tiles, "SAMPLE RATE", "cyan")
+        self.tile_fmt = self.tile(tiles, "FORMAT", "magenta")
+        self.tile_state = self.tile(tiles, "STATE", "white")
         root.pack_start(tiles, False, False, 0)
 
-        # --- ana çıkış kapsülü
+        # --- main output pod
         hero = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         self.hero = hero
         hero.get_style_context().add_class("pod")
@@ -825,7 +1392,7 @@ class SesYoneticisi(Gtk.Application):
         root.pack_start(hero, False, False, 0)
 
         head = Gtk.Box(spacing=8)
-        head.pack_start(label("ANA ÇIKIŞ // MASTER BUS", "section-accent", "mono"), True, True, 0)
+        head.pack_start(label("MAIN OUTPUT // MASTER BUS", "section-accent", "mono"), True, True, 0)
         self.db_chip = label("", "chip", "cyan", "mono")
         head.pack_end(self.db_chip, False, False, 0)
         hero.pack_start(head, False, False, 0)
@@ -836,12 +1403,12 @@ class SesYoneticisi(Gtk.Application):
 
         mid = Gtk.Box(spacing=12)
         pct_box = Gtk.Box(spacing=2)
-        pct_box.pack_start(label("%", "pct-sign", valign=Gtk.Align.START, margin_top=16), False, False, 0)
         self.big = label("0", "big-pct")
         pct_box.pack_start(self.big, False, False, 0)
+        pct_box.pack_start(label("%", "pct-sign", valign=Gtk.Align.START, margin_top=16), False, False, 0)
         mid.pack_start(pct_box, False, False, 0)
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, valign=Gtk.Align.CENTER)
-        self.mute_btn = Gtk.Button(label="SESSİZ", halign=Gtk.Align.END)
+        self.mute_btn = Gtk.Button(label="MUTE", halign=Gtk.Align.END)
         self.mute_btn.get_style_context().add_class("mute")
         self.mute_btn.connect("clicked", lambda *a: self.toggle_mute())
         right.pack_start(self.mute_btn, False, False, 0)
@@ -860,23 +1427,23 @@ class SesYoneticisi(Gtk.Application):
         presets = Gtk.Box(spacing=6, homogeneous=True)
         self.preset_btns = {}
         for p in (25, 50, 100, 150, 200, 300):
-            b = Gtk.Button(label=f"%{p}")
+            b = Gtk.Button(label=f"{p}%")
             b.get_style_context().add_class("pill")
             b.connect("clicked", lambda _b, v=p: self.apply_preset(v))
             presets.pack_start(b, True, True, 0)
             self.preset_btns[p] = b
         hero.pack_start(presets, False, False, 0)
 
-        # --- spektrum kapsülü
+        # --- spectrum pod
         spec = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
         spec.get_style_context().add_class("pod")
         sh = Gtk.Box(spacing=8)
-        sh.pack_start(label("FFT SPEKTRUM // 40 Hz – 16 kHz", "section", "mono"), True, True, 0)
-        sh.pack_end(label("CANLI MONİTÖR", "chip", "violet", "mono"), False, False, 0)
+        sh.pack_start(label("FFT SPECTRUM // 40 Hz – 16 kHz", "section", "mono"), True, True, 0)
+        sh.pack_end(label("LIVE MONITOR", "chip", "violet", "mono"), False, False, 0)
         spec.pack_start(sh, False, False, 0)
         peak_row = Gtk.Box(spacing=6)
         peak_col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        peak_col.pack_start(label("TEPE SEVİYESİ (PEAK)", "tile-label", "mono"), False, False, 0)
+        peak_col.pack_start(label("PEAK LEVEL", "tile-label", "mono"), False, False, 0)
         pv = Gtk.Box(spacing=6)
         self.peak_lbl = label("-∞", "peak-big", "mono")
         pv.pack_start(self.peak_lbl, False, False, 0)
@@ -890,24 +1457,53 @@ class SesYoneticisi(Gtk.Application):
         spec.pack_start(self.spectrum, False, False, 0)
         root.pack_start(spec, False, False, 0)
 
-        # --- kanal matrisi (uygulamalar)
+        # --- channel matrix (applications)
         mh = Gtk.Box(spacing=8, margin_top=4)
-        mh.pack_start(label("Kanal Matrisi", "headline"), True, True, 0)
-        self.apps_count = label("0 AKTİF", "section", "mono", valign=Gtk.Align.CENTER)
+        mh.pack_start(label("Channel Matrix", "headline"), True, True, 0)
+        self.apps_count = label("0 ACTIVE", "section", "mono", valign=Gtk.Align.CENTER)
         mh.pack_end(self.apps_count, False, False, 0)
         root.pack_start(mh, False, False, 0)
         self.apps_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         root.pack_start(self.apps_box, False, False, 0)
-        self.apps_empty = label("ŞU ANDA SES ÇALAN BİR UYGULAMA YOK", "empty", "mono", "channel", xalign=0.5)
+        self.apps_empty = label("NO APPLICATION IS PLAYING AUDIO", "empty", "mono", "channel", xalign=0.5)
         root.pack_start(self.apps_empty, False, False, 0)
 
-        # --- mikrofon
-        root.pack_start(label("GİRİŞ // MİKROFON", "section", "mono", margin_top=4), False, False, 0)
-        self.mic_row = ChannelRow("magenta", "MİKROFON", "", self.set_mic, self.toggle_mic)
+        # --- microphone
+        root.pack_start(label("INPUT // MICROPHONE", "section", "mono", margin_top=4), False, False, 0)
+        self.mic_row = ChannelRow("magenta", "MICROPHONE", "", self.set_mic, self.toggle_mic)
         root.pack_start(self.mic_row, False, False, 0)
 
-        root.pack_start(label("↑↓ ±5  ·  M SESSİZ  ·  1–3 = %100/%200/%300  ·  ESC GİZLE",
+        root.pack_start(label("↑↓ ±5  ·  M MUTE  ·  1–3 = 100/200/300%  ·  TAB SWITCH TABS",
                               "hint", "mono", xalign=0.5, margin_top=4), False, False, 0)
+
+        # --- second tab: media control
+        media = self.page("media", "MEDIA")
+        mh = Gtk.Box(spacing=8)
+        mh.pack_start(label("Media Control", "headline"), True, True, 0)
+        self.media_count = label("", "section", "mono", valign=Gtk.Align.CENTER)
+        mh.pack_end(self.media_count, False, False, 0)
+        media.pack_start(mh, False, False, 0)
+        strip = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        strip.get_style_context().add_class("channel")
+        sh = Gtk.Box()
+        sh.pack_start(label("OUTPUT // LIVE SPECTRUM", "tile-label", "mono"), True, True, 0)
+        self.media_peak = label("", "tile-label", "mono", xalign=1.0)
+        sh.pack_end(self.media_peak, False, False, 0)
+        strip.pack_start(sh, False, False, 0)
+        self.media_spectrum = Spectrum(self.analyzer, compact=True)
+        strip.pack_start(self.media_spectrum, False, False, 0)
+        media.pack_start(strip, False, False, 0)
+        self.media = MediaPanel()
+        media.pack_start(self.media, False, False, 0)
+        media.pack_start(label("SPACE PLAY/PAUSE  ·  ←→ ∓10s  ·  N/P NEXT/PREV  ·  ↑↓ VOLUME",
+                               "hint", "mono", xalign=0.5, margin_top=4), False, False, 0)
+
+    def page(self, name, title):
+        scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16, margin=18)
+        scroll.add(root)
+        self.stack.add_titled(scroll, name, title)
+        return root
 
     def tile(self, parent, title, color):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -920,13 +1516,13 @@ class SesYoneticisi(Gtk.Application):
 
     def build_tray(self):
         self.tray = Gtk.StatusIcon()
-        self.tray.set_title("Ses Yöneticisi")
+        self.tray.set_title("smanager")
         self.tray.connect("activate", lambda *a: self.toggle_window())
         self.tray.connect("scroll-event", self.on_tray_scroll)
         self.tray.connect("popup-menu", self.on_tray_menu)
         self.tray.set_visible(True)
 
-    # ---------------- analiz
+    # ---------------- analysis
     def start_analyzer(self):
         if self.sink:
             self.analyzer.start(self.sink + ".monitor")
@@ -941,19 +1537,28 @@ class SesYoneticisi(Gtk.Application):
             self._anim = None
 
     def animate(self):
-        self.spectrum.tick()
+        on_media = self.stack.get_visible_child_name() == "media"
+        (self.media_spectrum if on_media else self.spectrum).tick()
         self._anim_n += 1
+        if on_media and self._anim_n % 10 == 0:
+            self.media.tick()
+            n = len(self.media.cards)
+            self.media_count.set_text(f"MPRIS · {n} PLAYER" + ("" if n == 1 else "S"))
+            pl, pr = self.analyzer.peak
+            self.media_peak.set_text(f"PEAK {fmt_db(max(pl, pr), ' dBFS')}")
+        if self._anim_n % 40 == 0:
+            self.media.resync_positions()
         if self._anim_n % 3 == 0:
             pl, pr = self.analyzer.peak
             top = max(pl, pr)
             self.peak_lbl.set_text("-∞" if top == float("-inf") else f"{top:.1f}")
             self.lr_lbl.set_text(f"L {fmt_db(pl, '')}  ·  R {fmt_db(pr, '')}")
             live = top > -60
-            self.live_chip.set_text("● SİNYAL VAR" if live else "○ SESSİZLİK")
+            self.live_chip.set_text("● SIGNAL" if live else "○ SILENCE")
             set_class(self.live_chip, "live", live)
         return True
 
-    # ---------------- olaylar
+    # ---------------- events
     def toggle_window(self):
         if self.win.get_visible() and self.win.is_active():
             self.win.hide()
@@ -978,14 +1583,21 @@ class SesYoneticisi(Gtk.Application):
 
     def on_tray_menu(self, icon, button, time):
         menu = Gtk.Menu()
-        for text, cb in (("Pencereyi göster", self.show_window),
-                         ("Sessiz aç/kapat", self.toggle_mute),
-                         ("%100'e sıfırla", lambda: self.apply_preset(100))):
+        player = self.media.primary()
+        if player:
+            title = " ".join(str(player.meta.get("xesam:title") or player.identity).split())
+            it = Gtk.MenuItem(label=("❚❚  " if player.status == "Playing" else "▶  ") + title[:40])
+            it.connect("activate", lambda *a: player.call("PlayPause"))
+            menu.append(it)
+            menu.append(Gtk.SeparatorMenuItem())
+        for text, cb in (("Show window", self.show_window),
+                         ("Toggle mute", self.toggle_mute),
+                         ("Reset to 100%", lambda: self.apply_preset(100))):
             it = Gtk.MenuItem(label=text)
             it.connect("activate", lambda _i, f=cb: f())
             menu.append(it)
         menu.append(Gtk.SeparatorMenuItem())
-        q = Gtk.MenuItem(label="Çıkış")
+        q = Gtk.MenuItem(label="Quit")
         q.connect("activate", lambda *a: self.quit())
         menu.append(q)
         menu.show_all()
@@ -993,6 +1605,21 @@ class SesYoneticisi(Gtk.Application):
 
     def on_key(self, _w, ev):
         k = Gdk.keyval_name(ev.keyval)
+        if k in ("Tab", "ISO_Left_Tab"):
+            self.stack.set_visible_child_name(
+                "audio" if self.stack.get_visible_child_name() == "media" else "media")
+            return True
+        if self.stack.get_visible_child_name() == "media":
+            p = self.media.primary()
+            if p and k == "space":
+                p.call("PlayPause")
+                return True
+            if p and k in ("Left", "Right"):
+                p.seek_by(SEEK_STEP if k == "Right" else -SEEK_STEP)
+                return True
+            if p and k in ("n", "N", "p", "P"):
+                p.call("Next" if k in ("n", "N") else "Previous")
+                return True
         if k in ("Up", "Right", "plus", "KP_Add"):
             self.nudge(5)
         elif k in ("Down", "Left", "minus", "KP_Subtract"):
@@ -1014,12 +1641,12 @@ class SesYoneticisi(Gtk.Application):
         if not name or name == self.sink:
             return
         pactl("set-default-sink", name)
-        # çalan uygulamaları da yeni cihaza taşı
+        # move playing applications to the new device too
         for idx in self.app_rows:
             pactl("move-sink-input", idx, name, wait=False)
         self.schedule_refresh()
 
-    # ---------------- ses işlemleri
+    # ---------------- volume actions
     def set_master(self, v):
         if self.sink:
             if self.muted and v > 0:
@@ -1048,7 +1675,7 @@ class SesYoneticisi(Gtk.Application):
     def paint_master(self, v):
         self.big.set_text(str(v))
         db = fmt_db(pct_to_db(v))
-        self.db_lbl.set_text(f"KAZANÇ {db}")
+        self.db_lbl.set_text(f"GAIN {db}")
         self.db_chip.set_text(db)
         ctx = self.hero.get_style_context()
         ctx.remove_class("boost")
@@ -1058,11 +1685,11 @@ class SesYoneticisi(Gtk.Application):
             ctx.add_class(lvl)
         set_class(self.hero, "muted", self.muted)
         if self.muted:
-            self.warn.set_text("◼ ÇIKIŞ SESSİZDE")
+            self.warn.set_text("◼ OUTPUT MUTED")
         elif v > 200:
-            self.warn.set_text("▲ AŞIRI YÜKSELTME — KIRPILMA OLASI, HOPARLÖRE DİKKAT")
+            self.warn.set_text("▲ EXTREME BOOST — CLIPPING LIKELY, MIND YOUR SPEAKERS")
         elif v > 100:
-            self.warn.set_text("△ YAZILIMSAL YÜKSELTME AKTİF (%100 ÜZERİ)")
+            self.warn.set_text("△ SOFTWARE BOOST ACTIVE (ABOVE 100%)")
         else:
             self.warn.set_text("")
         self.warn.set_visible(bool(self.warn.get_text()))
@@ -1072,9 +1699,9 @@ class SesYoneticisi(Gtk.Application):
 
     def update_tray(self, v):
         self.tray.set_from_icon_name(vol_icon(min(v, 100), self.muted))
-        self.tray.set_tooltip_text(f"Ses: %{v}" + (" (sessiz)" if self.muted else ""))
+        self.tray.set_tooltip_text(f"Volume: {v}%" + (" (muted)" if self.muted else ""))
 
-    # ---------------- durumu oku
+    # ---------------- read state
     def schedule_refresh(self):
         if not self._refresh_pending:
             self._refresh_pending = True
@@ -1098,17 +1725,16 @@ class SesYoneticisi(Gtk.Application):
             self.muted = cur["mute"]
             self.volume = cur["volume"]
             self.main_slider.set_external(self.volume)
-            self.mute_btn.set_label("SESİ AÇ" if self.muted else "SESSİZ")
+            self.mute_btn.set_label("UNMUTE" if self.muted else "MUTE")
             set_class(self.mute_btn, "on", self.muted)
-            self.mute_btn.set_tooltip_text("Sesi aç (M)" if self.muted else "Sessize al (M)")
+            self.mute_btn.set_tooltip_text("Unmute (M)" if self.muted else "Mute (M)")
             self.paint_master(clamp(self.main_slider.get_value()))
             m = re.match(r"(\w+) (\d+)ch (\d+)Hz", cur.get("Sample Specification", ""))
             if m:
                 self.tile_rate.set_text(f"{int(m.group(3)) / 1000:g} kHz")
                 self.tile_fmt.set_text(f"{m.group(1).upper()} · {m.group(2)}CH")
             state = cur.get("State", "")
-            self.tile_state.set_text({"RUNNING": "AKTİF", "IDLE": "BOŞTA",
-                                      "SUSPENDED": "BEKLEMEDE"}.get(state, state))
+            self.tile_state.set_text(state)
             if self._anim:
                 self.analyzer.start(self.sink + ".monitor")
 
@@ -1123,7 +1749,7 @@ class SesYoneticisi(Gtk.Application):
             p = si["props"]
             idx = si["index"]
             seen.append(idx)
-            name = p.get("application.name") or p.get("application.process.binary") or "Uygulama"
+            name = p.get("application.name") or p.get("application.process.binary") or "Application"
             sub = p.get("media.name", "")
             if idx not in self.app_rows:
                 row = ChannelRow(
@@ -1136,11 +1762,12 @@ class SesYoneticisi(Gtk.Application):
             n = len(seen)
             row = self.app_rows[idx]
             row.set_accent(ACCENTS[(n - 1) % len(ACCENTS)])
-            row.update(si["volume"], si["mute"], f"KANAL {n:02d} — {name}", sub)
+            row.update(si["volume"], si["mute"], f"CHANNEL {n:02d} — {name}", sub)
         for idx in list(self.app_rows):
             if idx not in seen:
                 self.app_rows.pop(idx).destroy()
-        self.apps_count.set_text(f"{len(self.app_rows)} AKTİF")
+        self.apps_count.set_text(f"{len(self.app_rows)} ACTIVE")
+        self.media.update_streams(inputs)
         self.apps_empty.set_visible(not self.app_rows)
         self.apps_empty.set_no_show_all(bool(self.app_rows))
 
@@ -1163,11 +1790,11 @@ class SesYoneticisi(Gtk.Application):
 
         def run():
             for line in proc.stdout:
-                # analiz akışının kendi olayları (source-output, client) yenileme gerektirmez
+                # the analyzer stream's own events (source-output, client) don't need a refresh
                 if "client" not in line and "source-output" not in line:
                     GLib.idle_add(self.schedule_refresh)
         threading.Thread(target=run, daemon=True).start()
 
 
 if __name__ == "__main__":
-    sys.exit(SesYoneticisi().run(sys.argv[:1]))
+    sys.exit(SManager().run(sys.argv[:1]))

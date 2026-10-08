@@ -1,66 +1,93 @@
-# Ses Yöneticisi
+# smanager
 
-A volume control app for the Linux desktop that can boost the volume up to **300%**. It manages the default output device, every application that is playing audio, and the microphone from one window, and it stays in the system tray. It also has a real-time spectrum analyzer.
+A sound manager for the Linux desktop. It can boost the volume up to **300%**, control each application that is playing audio, and control the media playing in your browser or music player. It shows a real-time spectrum analyzer and runs in the system tray.
 
-The interface uses a dark, neon style built around a "cybernetic audio HUD" design system. It has glass panels, cyan, magenta and violet accents, Space Grotesk headings and JetBrains Mono for numbers.
+The interface is dark and neon-styled, with glass panels, cyan, magenta and violet accents, Space Grotesk headings and JetBrains Mono numbers.
 
 <p align="center">
-  <img src="screenshots/main.png" alt="Main window: master output and live spectrum" width="400">
-  <img src="screenshots/channels.png" alt="Per-application channels and microphone" width="400">
+  <img src="screenshots/audio.png" alt="Audio tab: master output and live spectrum" width="32%">
+  <img src="screenshots/channels.png" alt="Audio tab: per-application channels and microphone" width="32%">
+  <img src="screenshots/media.png" alt="Media tab: now playing in Firefox" width="32%">
 </p>
-
-> The interface text is in Turkish. ("Ses Yöneticisi" means "Sound Manager".)
 
 ## Features
 
-- **Master volume from 0% to 300%.** The window shows the level as a large percentage and gives the gain in dB. The slider marks 100% as unity, and preset buttons jump to 25 / 50 / 100 / 150 / 200 / 300%.
-- **Level-aware styling.** The master panel glows cyan up to 100%, violet above 100% and magenta above 200%, where it also warns that the sound may clip.
+### Audio tab
+
+- **Master volume from 0% to 300%.**
+  - A large percentage readout shows the level, with the gain in dB next to it.
+  - The slider marks 100% as unity.
+  - Preset buttons set the volume to 25 / 50 / 100 / 150 / 200 / 300%.
+- **Level-aware styling.** The master panel glows cyan up to 100% and violet above 100%. Above 200% it turns magenta and warns that the sound may clip.
 - **Output device selection.** You can switch between speakers, HDMI, Bluetooth headphones and other devices. Streams that are already playing move to the new device too.
-- **Channel matrix.** Each application playing audio gets its own channel card with a slider that goes up to 300%, a dB readout and a mute button.
-- **Microphone control.** Set the input level of the default source and mute it.
-- **Live FFT spectrum.** 28 logarithmic bands from 40 Hz to 16 kHz show the audio playing on the current output device.
-- **Peak meters.** Left and right peak meters show the level in dBFS, and a "signal / silence" indicator sits in the header.
-- **Real telemetry.** The window shows the sample rate, sample format, channel count and state of the active output device, plus the sound server version.
-- **Live sync.** When the volume changes somewhere else, such as from media keys or another mixer, the window updates right away.
-- **System tray.** Click the icon to show or hide the window, scroll over it to change the volume by ±5%, or right-click it for a menu. Closing the window keeps the app running in the tray.
-- **Single instance.** Launching the app a second time brings the existing window to the front instead of opening a new copy.
-- **Command line.** The `artir`, `azalt` and `sessiz` commands raise, lower and mute the volume. You can bind them to keyboard shortcuts.
+- **Channel matrix.** Every application playing audio gets its own channel card, with a slider up to 300%, a dB readout and a mute button.
+- **Microphone control.** You can set the level of the default input and mute it.
+- **Live FFT spectrum.** It has 28 logarithmic bands from 40 Hz to 16 kHz and shows the audio that is actually playing on the current output.
+- **Peak meters.** Left and right peak meters show the level in dBFS, and a "signal / silence" indicator in the header shows whether anything is playing.
+- **Real telemetry.** The tab shows the sample rate, sample format, channel count and state of the active output, plus the sound server version.
+
+### Media tab
+
+- **A card for each player.** Every media player that supports MPRIS gets a "now playing" card. This includes Firefox, Chrome and Chromium tabs, Spotify and VLC.
+- **Track details.** Each card shows the player, the source site (for example YOUTUBE.COM), the playing or paused state, and the title, artist and album.
+- **Cover art.** The card shows the player's own artwork when there is one. For YouTube videos without artwork, it shows the video thumbnail. Otherwise it shows a drawn placeholder.
+- **Controls.** The card has previous, play/pause and next buttons, ±10 second skip buttons, and a "go to window" button that brings the browser or player to the front.
+- **Progress bar.** It shows the elapsed and total time, and you can click or drag it to seek. It appears only when the player reports the track length.
+- **App volume.** Each card has a 300% volume slider and a mute button for that player's own audio stream. The card finds the stream by process ID, or by application name when the IDs don't match.
+- **Live spectrum strip.** A compact spectrum at the top of the tab shows the current output level.
+- **Ordering.** The player that is playing moves to the top, and cards appear and disappear as players start and quit.
+
+### Everywhere
+
+- **Live sync.** When the volume, a device or a player changes anywhere else, the window updates right away.
+- **System tray.**
+  - Click the icon to show or hide the window.
+  - Scroll over the icon to change the volume by ±5%.
+  - Right-click it for a menu with play/pause for the current track, mute, reset to 100% and quit.
+  - Closing the window keeps smanager running in the tray.
+- **Single instance.** Launching smanager again brings the existing window to the front instead of opening a second copy.
+- **Command line.** The `up`, `down` and `mute` commands can be bound to keyboard shortcuts.
 
 ## Tech stack
 
 | Layer | Used |
 | --- | --- |
-| Language | Python 3, in a single file with no pip dependencies |
+| Language | Python 3 in a single file, with no pip dependencies |
 | UI | GTK 3 through [PyGObject](https://pygobject.gnome.org/), with a custom CSS theme |
-| Drawing | Cairo (pycairo) for the spectrum, meters and header icon |
+| Drawing | Cairo (pycairo) for the spectrum, meters, cover art and icons |
 | Sound server | PipeWire (`pipewire-pulse`) or PulseAudio |
 | Volume control | `pactl` from `pulseaudio-utils` |
-| Live events | `pactl subscribe` runs on a background thread, and changes are batched before the window refreshes |
-| Audio capture | `parec` reads the output device's monitor source |
+| Live audio events | `pactl subscribe` on a background thread, with batched refreshes |
+| Audio capture | `parec` reading the output device's monitor source |
 | Spectrum analysis | A pure-Python radix-2 FFT, with no NumPy needed |
+| Media control | [MPRIS](https://specifications.freedesktop.org/mpris-spec/latest/) over D-Bus, using Gio's `DBusProxy` and the `NameOwnerChanged` signal |
 | Tray icon | `Gtk.StatusIcon` (XEmbed system tray) |
 | Fonts | [Space Grotesk](https://github.com/floriankarsten/space-grotesk) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono), bundled under the SIL Open Font License |
 | Desktop integration | XDG `.desktop` files for the application menu and autostart |
 
 ### Technical notes
 
-- **Boost above 100%.** Levels above 100% use the sound server's software amplification, for example `pactl set-sink-volume <sink> 250%`.
-- **dB values.** Software volume is cubic, so the app computes dB as `60 · log10(volume / 100)`. This matches the values `pactl` reports.
-- **Output parsing.** `pactl -f json` breaks on non-ASCII device names, such as Turkish ones. The app therefore parses the plain `pactl list` text output under `LC_ALL=C`.
+- **Boost above 100%.** smanager uses the sound server's software amplification, for example `pactl set-sink-volume <sink> 250%`.
+- **dB values.** Software volume is cubic, so smanager computes dB as `60 · log10(volume / 100)`. This matches what `pactl` reports.
+- **Output parsing.** `pactl -f json` breaks on non-ASCII device names, so smanager parses the plain `pactl list` output under `LC_ALL=C`.
 - **Spectrum pipeline.**
-  - `parec` records the monitor of the default sink as 16-bit stereo at 48 kHz.
-  - The app takes 2048-sample blocks and applies a Hann window.
+  - `parec` records the default sink's monitor as 16-bit stereo at 48 kHz.
+  - smanager splits the audio into 2048-sample blocks and applies a Hann window.
   - It runs a real-input FFT by packing the samples into a 1024-point complex FFT, which gives a resolution of about 23 Hz.
-  - It maps the results onto 28 log-spaced bands with a -72 dB floor.
+  - It maps the result onto 28 log-spaced bands with a -72 dB floor.
 - **CPU usage.**
-  - The app analyzes about 12 blocks per second and redraws at 20 fps.
+  - smanager analyzes about 12 blocks per second and redraws at 20 fps.
   - It skips the FFT and stops redrawing when the output is silent.
-  - Capture and analysis run only while the window is visible.
+  - Capture runs only while the window is visible.
+- **Media details.**
+  - Between updates from the player, the playback position is extrapolated from the playback rate. It is re-synced from D-Bus every two seconds, after `Seeked` signals and after state changes.
+  - Seeking uses `SetPosition` with the current `mpris:trackid`.
+  - The ±10 s buttons use `Seek`.
 - **Sliders.**
-  - While you drag a slider, the app sends a `pactl` call at most every ~35 ms.
+  - While you drag a slider, smanager sends a `pactl` call at most every ~35 ms.
   - It ignores outside updates during and right after the drag, so the slider doesn't jump back.
   - The mouse wheel scrolls the page instead of changing a volume by accident.
-- **Child processes.** The `pactl subscribe` and `parec` processes are tied to the app with `PR_SET_PDEATHSIG`, so they exit with it even after `kill -9`.
+- **Child processes.** The `pactl subscribe` and `parec` processes are tied to smanager with `PR_SET_PDEATHSIG`, so they exit with it even after `kill -9`.
 - **Channel balance.** On multi-channel devices, all channels are set to the same level, which resets any left/right balance.
 
 ## Requirements
@@ -73,64 +100,79 @@ sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 pulseaudio-utils
 
 On PipeWire systems, `pipewire-pulse` must be installed. Most current distributions include it by default.
 
-The tray icon needs a panel that supports the XEmbed system tray, such as XFCE, MATE, Cinnamon or LXDE/LXQt. On GNOME, the icon doesn't appear without an extension, so closing the window quits the app.
+The tray icon needs a panel that supports the XEmbed system tray, such as XFCE, MATE, Cinnamon or LXDE/LXQt. On GNOME, the icon doesn't appear without an extension, so closing the window quits smanager.
+
+Firefox publishes media controls over MPRIS by default on Linux. Chrome and Chromium do too.
 
 ## Installation
 
 ```sh
-git clone https://github.com/msozturktr/ses-yoneticisi.git
-cd ses-yoneticisi
-./install.sh              # install and add to the application menu
-./install.sh --otomatik   # also start hidden in the tray at login
+git clone https://github.com/msozturktr/smanager.git
+cd smanager
+./install.sh               # install and add to the application menu
+./install.sh --autostart   # also start hidden in the tray at login
 ```
 
-The script copies the app to `~/.local/bin/ses-yoneticisi` and installs the bundled fonts into `~/.local/share/fonts/ses-yoneticisi`. It also adds a menu entry under `~/.local/share/applications`. It doesn't need `sudo`.
+The script copies smanager to `~/.local/bin/smanager` and installs the bundled fonts into `~/.local/share/fonts/smanager`. It also adds a menu entry under `~/.local/share/applications`. It doesn't need `sudo`.
 
 To uninstall:
 
 ```sh
-./install.sh --kaldir
+./install.sh --uninstall
 ```
 
 ## Usage
 
-Open **Ses Yöneticisi** from the application menu, or run it from a terminal:
+Open **smanager** from the application menu, or run it from a terminal:
 
 ```sh
-ses-yoneticisi            # open the window (or bring the running one to the front)
-ses-yoneticisi --gizli    # start hidden in the tray
+smanager            # open the window (or bring the running one to the front)
+smanager --hidden   # start hidden in the tray
 ```
 
-### Window shortcuts
+### Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
-| `↑` / `→` / `+` | Volume +5% |
-| `↓` / `←` / `-` | Volume −5% |
+| `Tab` | Switch between the Audio and Media tabs |
+| `↑` / `+` | Volume +5% |
+| `↓` / `-` | Volume −5% |
 | `M` | Mute / unmute |
 | `1` / `2` / `3` | Set the volume to 100% / 200% / 300% |
 | `Esc` | Hide the window to the tray |
 
+On the Audio tab, `←` and `→` also change the volume by ±5%. On the Media tab, these keys act on the player that is playing, or on the first player if none is playing:
+
+| Key | Action |
+| --- | --- |
+| `Space` | Play / pause |
+| `←` / `→` | Seek −10 s / +10 s |
+| `N` / `P` | Next / previous track |
+
 ### Command line
 
 ```sh
-ses-yoneticisi artir [N]   # raise the default output by N points (default 5, max 300)
-ses-yoneticisi azalt [N]   # lower it by N points
-ses-yoneticisi sessiz      # toggle mute
+smanager up [N]     # raise the default output by N points (default 5, max 300)
+smanager down [N]   # lower it by N points
+smanager mute       # toggle mute
 ```
 
 You can bind these commands to the keyboard's volume keys so that the keys also go up to 300%. For example, on XFCE:
 
 ```sh
 xfconf-query -c xfce4-keyboard-shortcuts -n -t string \
-  -p "/commands/custom/XF86AudioRaiseVolume" -s "ses-yoneticisi artir 5"
+  -p "/commands/custom/XF86AudioRaiseVolume" -s "smanager up 5"
 xfconf-query -c xfce4-keyboard-shortcuts -n -t string \
-  -p "/commands/custom/XF86AudioLowerVolume" -s "ses-yoneticisi azalt 5"
+  -p "/commands/custom/XF86AudioLowerVolume" -s "smanager down 5"
 xfconf-query -c xfce4-keyboard-shortcuts -n -t string \
-  -p "/commands/custom/XF86AudioMute" -s "ses-yoneticisi sessiz"
+  -p "/commands/custom/XF86AudioMute" -s "smanager mute"
 ```
 
 If a panel PulseAudio plugin already grabs these keys, turn off its keyboard shortcuts in the plugin settings.
+
+## Privacy
+
+For YouTube videos that have no cover art, smanager downloads the video thumbnail from `i.ytimg.com`. It makes no other network requests.
 
 ## Warning
 
@@ -141,7 +183,13 @@ Levels above 100% amplify the signal in software. At high levels the audio can c
 - Debian 13 (trixie), XFCE, X11
 - PipeWire 1.4.5 with pipewire-pulse, pactl 17.0
 - Python 3.13, GTK 3.24
-- Intel Core i5-4260U, on which the analyzer uses about 2–4% of total CPU while the window is open
+- Firefox (YouTube) as an MPRIS player
+- Intel Core i5-4260U, on which smanager uses about 2–4% of total CPU while the window is open
+
+## Known limitations
+
+- Firefox doesn't always report the track length for web media, and the progress bar is hidden while it is missing.
+- The app volume on a media card controls every audio stream that belongs to that player's process.
 
 ## License
 
