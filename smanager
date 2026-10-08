@@ -141,8 +141,18 @@ headerbar.app-bar {
   background: #090d16; border: none; box-shadow: none; padding: 6px 12px;
   border-bottom: 1px solid rgba(0,240,255,0.15);
 }
-headerbar.app-bar button { color: #94a3b8; background: transparent; border: none; box-shadow: none; }
-headerbar.app-bar button:hover { color: #00f0ff; }
+/* our own window buttons: drawn the same on every desktop theme */
+headerbar.app-bar button.winbtn {
+  min-width: 26px; min-height: 26px; padding: 0; margin: 0;
+  border-radius: 9999px; border: 1px solid rgba(255,255,255,0.08);
+  background-color: rgba(15,23,42,0.8); background-image: none;
+  color: #94a3b8; box-shadow: none; text-shadow: none; -gtk-icon-shadow: none; outline-width: 0;
+}
+headerbar.app-bar button.winbtn:hover { color: #00f0ff; border-color: rgba(0,240,255,0.5); }
+headerbar.app-bar button.winbtn.close:hover {
+  color: #04070d; background-color: #d946ef; border-color: #d946ef;
+  box-shadow: 0 0 14px rgba(217,70,239,0.6);
+}
 .app-title { font-weight: 700; font-size: 15px; letter-spacing: 1px; color: #00f0ff; }
 .app-sub { font-size: 10px; letter-spacing: 1px; color: #94a3b8; }
 
@@ -1353,7 +1363,9 @@ class SManager(Gtk.Application):
         win.connect("unmap-event", lambda *a: self.stop_analyzer())
 
         # header bar
-        bar = Gtk.HeaderBar(show_close_button=True)
+        # no theme title buttons: their size and look vary between desktops
+        # (e.g. huge on KDE/Breeze), so the header carries its own
+        bar = Gtk.HeaderBar(show_close_button=False)
         bar.get_style_context().add_class("app-bar")
         title_box = Gtk.Box(spacing=10)
         title_box.pack_start(WaveIcon(), False, False, 0)
@@ -1365,7 +1377,20 @@ class SManager(Gtk.Application):
         bar.pack_start(title_box)
         bar.set_custom_title(Gtk.Box())
         self.live_chip = label("○ STANDBY", "chip", "mono")
+        controls = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER, margin_start=6)
+        self.max_btn = None
+        for icon, tip, cls, cb in (
+                ("window-minimize-symbolic", "Minimize", None, lambda: win.iconify()),
+                ("window-maximize-symbolic", "Maximize", "max", self.toggle_maximize),
+                ("window-close-symbolic", "Close", "close", self.on_close)):
+            b = self.window_button(icon, tip, cls)
+            b.connect("clicked", lambda _b, f=cb: f())
+            controls.pack_start(b, False, False, 0)
+            if cls == "max":
+                self.max_btn = b
+        bar.pack_end(controls)
         bar.pack_end(self.live_chip)
+        win.connect("window-state-event", self.on_window_state)
         win.set_titlebar(bar)
 
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
@@ -1497,6 +1522,31 @@ class SManager(Gtk.Application):
         media.pack_start(self.media, False, False, 0)
         media.pack_start(label("SPACE PLAY/PAUSE  ·  ←→ ∓10s  ·  N/P NEXT/PREV  ·  ↑↓ VOLUME",
                                "hint", "mono", xalign=0.5, margin_top=4), False, False, 0)
+
+    @staticmethod
+    def window_button(icon, tooltip, cls=None):
+        img = Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.MENU)
+        img.set_pixel_size(12)  # fixed size, independent of the icon theme
+        b = Gtk.Button(valign=Gtk.Align.CENTER, focus_on_click=False, tooltip_text=tooltip)
+        b.set_image(img)
+        b.get_style_context().add_class("winbtn")
+        if cls:
+            b.get_style_context().add_class(cls)
+        return b
+
+    def toggle_maximize(self):
+        if self.win.is_maximized():
+            self.win.unmaximize()
+        else:
+            self.win.maximize()
+
+    def on_window_state(self, _w, ev):
+        maxed = bool(ev.new_window_state & Gdk.WindowState.MAXIMIZED)
+        img = self.max_btn.get_image()
+        img.set_from_icon_name("window-restore-symbolic" if maxed else "window-maximize-symbolic",
+                               Gtk.IconSize.MENU)
+        img.set_pixel_size(12)
+        self.max_btn.set_tooltip_text("Restore" if maxed else "Maximize")
 
     def page(self, name, title):
         scroll = Gtk.ScrolledWindow(hscrollbar_policy=Gtk.PolicyType.NEVER)
